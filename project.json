@@ -1,0 +1,13 @@
+{
+    "project_name": "DefectDojo Engagement Manager",
+    "version": "1.0.10",
+    "serial_number": "DDJ-ENG-2025-001",
+    "created_date": "2025-10-26 18:30:06",
+    "api_base_url": "https://demo.defectdojo.org",
+    "changelog": {
+        "1.0.10": "Added Summary button with Engagements and Jiras summary reports",
+        "1.0.9": "Jiras modal with all filters working, table loading indicators",
+        "1.0.8": "Edit engagement modal",
+        "1.0.7": "Toast notifications"
+    }
+}
