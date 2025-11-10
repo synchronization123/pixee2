@@ -1,0 +1,175 @@
+# filename: jira_download_to_excel.pyw
+import sys
+import os
+import io
+import tkinter as tk
+from tkinter import messagebox, simpledialog
+from datetime import datetime
+from urllib.parse import quote_plus
+
+import pandas as pd
+import requests
+
+# ----------------- CONFIG -----------------
+BASE_CSV_URL = ("https://jira.crm.com/"
+                "sr/jira.issueviews:searchrequest-csv-current-fields/temp/SearchRequest.csv?jqlQuery=")
+
+# If your Jira expects a Bearer token, use this header.
+# If it expects Basic or a cookie, adjust HEADERS accordingly.
+TOKEN = "ejjejdjdje"  # <-- replace if your instance requires a different token
+HEADERS = {
+    "Authorization": f"Bearer {TOKEN}",
+    "Accept": "text/csv"
+}
+VERIFY_SSL = True  # set False if your Jira uses self-signed certs
+# ------------------------------------------
+
+
+def normalize_version_input(user_input: str) -> str:
+    """
+    Accepts inputs like:
+      - '11.0.4.4.3'
+      - 'V11.0.4.4.3'
+      - 'v11.0.4.4.3'
+    Returns the version *number part* and a canonical V* string for filenames.
+    """
+    s = (user_input or "").strip()
+    if not s:
+        raise ValueError("Version cannot be empty.")
+    if s[0] in ("V", "v", "R", "r"):
+        number_part = s[1:]
+    else:
+        number_part = s
+    if not number_part:
+        raise ValueError("Please provide a valid version, e.g. 11.0.4.4.3")
+    # Basic sanity check (optional)
+    return number_part, f"V{number_part}", f"R{number_part}"
+
+
+def build_jql(v_str: str, r_str: str) -> str:
+    # Exact format requested
+    return f"Build(s) in ({v_str}) OR Build(s) in ({r_str})"
+
+
+def fetch_csv_as_dataframe(jql: str) -> pd.DataFrame:
+    url = BASE_CSV_URL + quote_plus(jql)
+    resp = requests.get(url, headers=HEADERS, verify=VERIFY_SSL, timeout=60)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Failed to download CSV (HTTP {resp.status_code}).")
+    # Jira CSVs are typically UTF-8; fallback if needed
+    content = resp.content
+    try:
+        df = pd.read_csv(io.BytesIO(content))
+    except Exception:
+        df = pd.read_csv(io.BytesIO(content), encoding="latin-1")
+    return df
+
+
+def derive_type_from_version(version_v_str: str) -> str:
+    # If version has the keyword 'develop' (case-insensitive) -> Develop else CP
+    if "develop" in version_v_str.lower():
+        return "Develop"
+    return "CP"
+
+
+def apply_business_rules(df: pd.DataFrame, version_v_str: str) -> pd.DataFrame:
+    # Ensure required source columns exist
+    src_issue_key = "Issue key"
+    src_status = "Status"
+    src_issue_type = "Issue Type"
+    components_col = None
+
+    # Find a components column name (Jira often uses "Component/s")
+    for cand in ["Component/s", "Components", "Component", "component/s"]:
+        if cand in df.columns:
+            components_col = cand
+            break
+
+    # Reduce to the three originals (if present), else create empty
+    base = pd.DataFrame()
+    base[src_issue_key] = df[src_issue_key] if src_issue_key in df.columns else ""
+    base[src_status] = df[src_status] if src_status in df.columns else ""
+    base[src_issue_type] = df[src_issue_type] if src_issue_type in df.columns else ""
+
+    # New columns
+    today_str = datetime.now().strftime("%d-%b")  # e.g., 23-Sep
+    base["Date"] = today_str
+    base["Version"] = version_v_str  # e.g., V11.0.4.4.3
+    base["Analysis Status"] = ""     # blank
+    base["Assigned To"] = ""         # blank
+
+    # Initial Type from version
+    base["Type"] = derive_type_from_version(version_v_str)
+
+    # If any component/s has keywords, mutate Type or Issue Type
+    if components_col and components_col in df.columns:
+        comps_series = df[components_col].fillna("").astype(str)
+
+        # Pharmacy Module -> Type to Develop-Pharmacy or CP-Pharmacy
+        pharm_mask = comps_series.str.contains("Pharmacy Module", case=False, na=False)
+        if pharm_mask.any():
+            base.loc[pharm_mask & base["Type"].str.contains("^Develop$", case=False, na=False),
+                     "Type"] = "Develop-Pharmacy"
+            base.loc[pharm_mask & ~base["Type"].str.contains("^Develop$", case=False, na=False),
+                     "Type"] = "CP-Pharmacy"
+
+        # "delow Den" keyword -> Type to Develop-Den or CP-Den
+        den_mask = comps_series.str.contains("delow Den", case=False, na=False)
+        if den_mask.any():
+            base.loc[den_mask & base["Type"].str.contains("^Develop$", case=False, na=False),
+                     "Type"] = "Develop-Den"
+            base.loc[den_mask & ~base["Type"].str.contains("^Develop$", case=False, na=False),
+                     "Type"] = "CP-Den"
+
+        # Security/AppSecurity -> set Issue Type to Security
+        sec_mask = comps_series.str.contains(r"\bSecurity\b", case=False, na=False) | \
+                   comps_series.str.contains(r"\bAppSecurity\b", case=False, na=False)
+        if sec_mask.any():
+            base.loc[sec_mask, src_issue_type] = "Security"
+
+    # Final column order required:
+    final_cols = ["Date", "Issue key", "Status", "Version",
+                  "Analysis Status", "Assigned To", "Type", "Issue Type"]
+    # Ensure all present
+    for c in final_cols:
+        if c not in base.columns:
+            base[c] = ""
+    base = base[final_cols]
+    return base
+
+
+def save_to_excel(df: pd.DataFrame, out_name: str) -> str:
+    out_path = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), out_name)
+    df.to_excel(out_path, index=False)
+    return out_path
+
+
+def main():
+    # Minimal Tk-based prompt so the .pyw runs without console
+    root = tk.Tk()
+    root.withdraw()
+
+    try:
+        user_ver = simpledialog.askstring("Jira Export", "Enter version (e.g., 11.0.4.4.3 or V11.0.4.4.3):")
+        if user_ver is None:
+            return  # user cancelled
+
+        number_part, v_str, r_str = normalize_version_input(user_ver)
+        jql = build_jql(v_str, r_str)
+
+        # Download + prepare
+        df_raw = fetch_csv_as_dataframe(jql)
+        df_final = apply_business_rules(df_raw, v_str)
+
+        # Save
+        outfile = f"{v_str}.xlsx"
+        out_path = save_to_excel(df_final, outfile)
+
+        messagebox.showinfo("Done", f"Saved: {out_path}")
+
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
+
+
+if __name__ == "__main__":
+    main()
