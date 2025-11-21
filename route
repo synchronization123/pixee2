@@ -38,29 +38,21 @@ try:
     # Assuming the response has a 'routes' key with list of route objects
     routes = data.get('routes', [])
 
-    # Prepare data for DataFrame
-    route_data = []
-    for route in routes:
-        route_info = {
-            'Route': route.get('route', {}).get('value', 'N/A'),
-            'HTTP Method': route.get('route', {}).get('httpMethod', 'N/A'),
-            'Status': route.get('status', 'Unknown'),
-            'First Seen': route.get('firstSeen', 'Unknown'),
-            'Last Activity': route.get('lastActivity', 'Unknown'),
-            'Servers': ', '.join([s.get('name', 'Unknown') for s in route.get('servers', [])]),
-            # Add more fields as per actual API response, e.g., 'signature', 'vulnerabilities', etc.
-        }
-        route_data.append(route_info)
-
-    # Create DataFrame
-    df = pd.DataFrame(route_data)
+    # Dynamically normalize and flatten all fields using pd.json_normalize
+    if routes:
+        df = pd.json_normalize(routes)
+    else:
+        df = pd.DataFrame()
 
     # Save to Excel
     filename = f"route_coverage_{APP_ID}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    df.to_excel(filename, index=False, sheet_name='Route Coverage')
-
+    with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Route Coverage')
+    
     print(f"Route coverage data exported to {filename}")
     print(f"Total routes: {len(routes)}")
+    if not df.empty:
+        print(f"Exported columns: {list(df.columns)}")
 
 except requests.RequestException as e:
     print(f"Error fetching data: {str(e)}")
