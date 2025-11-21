@@ -23,11 +23,9 @@ headers = {
 # API endpoint for routes (route coverage data)
 url = f"{TEAMSERVER_URL}/api/ng/{ORG_ID}/applications/{APP_ID}/routes"
 
-# Parameters: adjust as needed, e.g., for filtering, sorting, limiting
+# Parameters with limit to control the number of routes fetched
 params = {
-    "expand": "route,servers",  # Expand related data if needed
-    "sort": "-lastActivity",  # Sort by last activity descending for latest
-    # "limit": 100  # Uncomment to limit results
+    "limit": 100  # Adjust this value as needed to limit the number of results
 }
 
 try:
