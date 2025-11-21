@@ -1,0 +1,70 @@
+import requests
+import base64
+import pandas as pd
+from datetime import datetime
+
+# Replace these with your actual Contrast Security credentials
+TEAMSERVER_URL = "https://app.contrastsecurity.com/Contrast"  # Or your on-prem URL if applicable
+ORG_ID = "your_organization_id_here"  # Find in Contrast UI under Organization Settings
+USERNAME = "your_username_here"  # Your Contrast username
+SERVICE_KEY = "your_service_key_here"  # From Your Keys in Contrast UI
+API_KEY = "your_api_key_here"  # From Your Keys in Contrast UI
+APP_ID = "dhdhdjdjdjd"  # The application ID
+
+# Authentication setup
+auth_str = f"{USERNAME}:{SERVICE_KEY}"
+auth_encoded = base64.b64encode(auth_str.encode('utf-8')).decode('utf-8')
+headers = {
+    "Accept": "application/json",
+    "API-Key": API_KEY,
+    "Authorization": auth_encoded
+}
+
+# API endpoint for routes (route coverage data)
+url = f"{TEAMSERVER_URL}/api/ng/{ORG_ID}/applications/{APP_ID}/routes"
+
+# Parameters: adjust as needed, e.g., for filtering, sorting, limiting
+params = {
+    "expand": "route,servers",  # Expand related data if needed
+    "sort": "-lastActivity",  # Sort by last activity descending for latest
+    # "limit": 100  # Uncomment to limit results
+}
+
+try:
+    response = requests.get(url, headers=headers, params=params)
+    response.raise_for_status()
+    data = response.json()
+
+    # Assuming the response has a 'routes' key with list of route objects
+    routes = data.get('routes', [])
+
+    # Prepare data for DataFrame
+    route_data = []
+    for route in routes:
+        route_info = {
+            'Route': route.get('route', {}).get('value', 'N/A'),
+            'HTTP Method': route.get('route', {}).get('httpMethod', 'N/A'),
+            'Status': route.get('status', 'Unknown'),
+            'First Seen': route.get('firstSeen', 'Unknown'),
+            'Last Activity': route.get('lastActivity', 'Unknown'),
+            'Servers': ', '.join([s.get('name', 'Unknown') for s in route.get('servers', [])]),
+            # Add more fields as per actual API response, e.g., 'signature', 'vulnerabilities', etc.
+        }
+        route_data.append(route_info)
+
+    # Create DataFrame
+    df = pd.DataFrame(route_data)
+
+    # Save to Excel
+    filename = f"route_coverage_{APP_ID}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    df.to_excel(filename, index=False, sheet_name='Route Coverage')
+
+    print(f"Route coverage data exported to {filename}")
+    print(f"Total routes: {len(routes)}")
+
+except requests.RequestException as e:
+    print(f"Error fetching data: {str(e)}")
+    if hasattr(e.response, 'text'):
+        print(f"Response: {e.response.text}")
+except Exception as e:
+    print(f"Error processing data: {str(e)}")
