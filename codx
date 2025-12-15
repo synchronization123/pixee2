@@ -9,10 +9,38 @@ from tkinter import scrolledtext, ttk
 import threading
 import queue
 
-# ---------------- PATHS (FIXED) ----------------
-USERNAME = os.getenv("USERNAME")
+# ---------------- USER HOME RESOLUTION ----------------
+def resolve_user_home():
+    username = os.getenv("USERNAME")
+    candidates = []
 
-TOOLS_DIR = fr"C:\Users\{USERNAME}\tools"
+    if username:
+        candidates.append(fr"C:\Users\{username}")
+        if username.lower().endswith(".corp"):
+            candidates.append(fr"C:\Users\{username[:-5]}")
+
+    # also try USERPROFILE as fallback
+    userprofile = os.getenv("USERPROFILE")
+    if userprofile:
+        candidates.append(userprofile)
+
+    for path in candidates:
+        try:
+            if path and os.path.isdir(path):
+                test = os.path.join(path, ".perm_test")
+                with open(test, "w") as f:
+                    f.write("test")
+                os.remove(test)
+                return path
+        except Exception:
+            continue
+
+    raise RuntimeError("Unable to determine a writable user home directory")
+
+USER_HOME = resolve_user_home()
+
+# ---------------- PATHS (FIXED) ----------------
+TOOLS_DIR = os.path.join(USER_HOME, "tools")
 
 PYTHON_DIR = os.path.join(TOOLS_DIR, "python")
 PYTHON_EXE = os.path.join(PYTHON_DIR, "python.exe")
@@ -20,7 +48,7 @@ PYTHON_EXE = os.path.join(PYTHON_DIR, "python.exe")
 NODE_DIR = os.path.join(TOOLS_DIR, "nodejs")
 
 # 🔒 FIXED Codex location
-CODEX_DIR = fr"C:\Users\{USERNAME}\.codex"
+CODEX_DIR = os.path.join(USER_HOME, ".codex")
 CONFIG_PATH = os.path.join(CODEX_DIR, "config.toml")
 
 PYTHON_ZIP_URL = "https://www.python.org/ftp/python/3.12.2/python-3.12.2-embed-amd64.zip"
@@ -125,6 +153,7 @@ class SetupGUI:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
+
         self.log("✔ User PATH updated")
 
     # ---------- CODEX ----------
@@ -196,13 +225,12 @@ class SetupGUI:
         self.log("")
         self.log("ℹ IMPORTANT NOTE:")
         self.log("If config.toml is empty, navigate to:")
-        self.log(f"C:\\Users\\{USERNAME}\\.codex")
+        self.log(CODEX_DIR)
         self.log("and add the required data from:")
         self.log("https://hub.ai.com")
         self.log("")
 
-        self.log("✅ Usage:")
-        self.log('codex "your prompt"')
+        self.log('✅ Usage: codex "your prompt"')
 
         btn = tk.Button(
             self.root,
