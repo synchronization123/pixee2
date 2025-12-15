@@ -5,41 +5,33 @@ import textwrap
 
 ROUNDS = 10
 
-def encrypt_layer(code_bytes):
-    compiled = compile(code_bytes, "<secure>", "exec")
-    marshaled = marshal.dumps(compiled)
-    compressed = zlib.compress(marshaled)
-    encoded = base64.b64encode(compressed)
-    return encoded
-
-# -------- FILES --------
 INPUT_FILE = "your_script.pyw"
 OUTPUT_FILE = "your_script_encrypted.pyw"
 
 with open(INPUT_FILE, "r", encoding="utf-8") as f:
-    code = f.read().encode()
+    source = f.read()
 
-data = code
+data = source
+
 for _ in range(ROUNDS):
-    data = encrypt_layer(data)
+    code_obj = compile(data, "<protected>", "exec")
+    marshaled = marshal.dumps(code_obj)
+    compressed = zlib.compress(marshaled)
+    data = base64.b64encode(compressed).decode("ascii")
 
-# Convert bytes → safe string
-payload = data.decode()
+payload = data  # SAFE ASCII STRING
 
-final_code = f'''
+final_code = f"""
 import base64, zlib, marshal
 
 data = "{payload}"
 
-for _ in range({ROUNDS}):
-    data = marshal.loads(
-        zlib.decompress(
-            base64.b64decode(data)
-        )
-    )
+decoded = base64.b64decode(data)
+decompressed = zlib.decompress(decoded)
+code = marshal.loads(decompressed)
 
-exec(data)
-'''
+exec(code)
+"""
 
 final_code = textwrap.dedent(final_code)
 
