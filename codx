@@ -1,88 +1,92 @@
-@echo off
-echo Starting Codex Environment...
-powershell -ExecutionPolicy Bypass -NoExit -Command "& {
-    $code = @'
+import os
+import sys
+import zipfile
+import urllib.request
+import shutil
+import subprocess
+import tempfile
+
 # Define paths
-$username = $env:USERNAME
-$toolsPath = "C:\Users\$username\tools"
-$installPath = "$toolsPath\nodejs"
-$zipUrl = 'https://nodejs.org/dist/v24.12.0/node-v24.12.0-win-x64.zip'
-$zipPath = "$env:TEMP\nodejs.zip"
-$codexDir = "$env:USERPROFILE\.codex"
-$configPath = "$codexDir\config.toml"
-$extractTemp = "$env:TEMP\node_extract"
+username = os.getenv('USERNAME')
+tools_path = f"C:\\Users\\{username}\\tools"
+install_path = os.path.join(tools_path, "nodejs")
+zip_url = "https://nodejs.org/dist/v24.12.0/node-v24.12.0-win-x64.zip"
+codex_dir = os.path.join(os.getenv('USERPROFILE'), ".codex")
+config_path = os.path.join(codex_dir, "config.toml")
 
-# Function to check if Node.js is installed
-function Test-NodeInstalled {
-    return (Test-Path "$installPath\node.exe") -and (Test-Path "$installPath\npm.cmd")
-}
+def test_node_installed():
+    node_exe = os.path.join(install_path, "node.exe")
+    npm_cmd = os.path.join(install_path, "npm.cmd")
+    return os.path.exists(node_exe) and os.path.exists(npm_cmd)
 
-# Function to check if Codex is installed
-function Test-CodexInstalled {
-    if (!(Test-NodeInstalled)) { return $false }
-    try {
-        npm list -g @openai/codex --depth=0 --silent 2>$null
-        return $?
-    } catch {
-        return $false
-    }
-}
+def test_codex_installed():
+    if not test_node_installed():
+        return False
+    try:
+        npm_path = os.path.join(install_path, "npm.cmd")
+        result = subprocess.run([npm_path, "list", "-g", "@openai/codex", "--depth=0", "--silent"],
+                                capture_output=True, text=True, cwd=install_path)
+        return result.returncode == 0
+    except:
+        return False
 
-# Ensure directories exist
-New-Item -ItemType Directory -Force -Path $toolsPath | Out-Null
-New-Item -ItemType Directory -Force -Path $codexDir | Out-Null
+# Create directories
+os.makedirs(tools_path, exist_ok=True)
+os.makedirs(codex_dir, exist_ok=True)
 
-# Add Node.js to PATH if installed
-if (Test-NodeInstalled) {
-    $env:PATH = "$installPath;$env:PATH"
-    Write-Host 'Node.js already installed. PATH updated.'
-} else {
-    Write-Host 'Step 1: Downloading Node.js binaries...'
-    Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
+if test_node_installed():
+    print("Node.js already installed. Updating PATH...")
+    os.environ['PATH'] = install_path + ';' + os.environ['PATH']
+else:
+    print("Step 1: Downloading Node.js binaries...")
+    with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp_zip:
+        zip_path = tmp_zip.name
+    urllib.request.urlretrieve(zip_url, zip_path)
 
-    Write-Host "Step 2: Extracting Node.js to $installPath..."
-    New-Item -ItemType Directory -Force -Path $extractTemp | Out-Null
-    New-Item -ItemType Directory -Force -Path $installPath | Out-Null
-    Expand-Archive -Path $zipPath -DestinationPath $extractTemp -Force
-    $nodeFolder = Get-ChildItem -Path $extractTemp -Directory | Select-Object -First 1
-    if ($nodeFolder) {
-        Get-ChildItem -Path $nodeFolder.FullName -Recurse | Move-Item -Destination $installPath -Force
-        Remove-Item $nodeFolder.FullName -Recurse -Force
-    }
-    Remove-Item $extractTemp -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+    print("Step 2: Extracting Node.js...")
+    with tempfile.TemporaryDirectory() as extract_temp:
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(extract_temp)
+        # Find the extracted node folder (e.g., node-v24.12.0-win-x64)
+        node_folders = [d for d in os.listdir(extract_temp) if d.startswith('node-v')]
+        if node_folders:
+            node_full = os.path.join(extract_temp, node_folders[0])
+            os.makedirs(install_path, exist_ok=True)
+            for item in os.listdir(node_full):
+                src = os.path.join(node_full, item)
+                dst = os.path.join(install_path, item)
+                if os.path.isdir(src):
+                    shutil.copytree(src, dst, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(src, dst)
+    os.remove(zip_path)
+    os.environ['PATH'] = install_path + ';' + os.environ['PATH']
+    print("Step 3: Node.js extracted and PATH updated.")
 
-    Write-Host 'Step 3: Adding Node.js to PATH...'
-    $env:PATH = "$installPath;$env:PATH"
-}
+# Set npm prefix for portable globals
+npm_path = os.path.join(install_path, "npm.cmd")
+subprocess.run([npm_path, "config", "set", "prefix", install_path], cwd=install_path)
 
-# Set npm prefix for portable global installs
-npm config set prefix $installPath
+if not test_codex_installed():
+    print("Step 4: Installing @openai/codex globally...")
+    subprocess.run([npm_path, "install", "-g", "@openai/codex"], cwd=install_path)
+else:
+    print("Codex already installed.")
 
-# Install Codex if not already
-if (!(Test-CodexInstalled)) {
-    Write-Host 'Step 4: Installing @openai/codex globally...'
-    npm install -g @openai/codex
-} else {
-    Write-Host 'Codex already installed.'
-}
+if not os.path.exists(config_path):
+    print("Step 5: Creating config.toml. Opening Notepad for editing...")
+    with open(config_path, 'w') as f:
+        pass  # Create empty file
+    notepad_proc = subprocess.Popen(["notepad.exe", config_path])
+    input("Configure your settings, save, and close Notepad. Press Enter here to continue...")
+    notepad_proc.wait()  # Optional: wait for close
+else:
+    print("Config.toml already exists.")
 
-# Create/Open config.toml if it doesn't exist
-if (!(Test-Path $configPath)) {
-    Write-Host 'Step 5: Creating config.toml. Notepad will open for editing. Close it when done.'
-    New-Item -ItemType File -Path $configPath -Force | Out-Null
-    Start-Process notepad $configPath
-    Write-Host 'Configure your settings in the opened Notepad, then save and close.'
-    Read-Host 'Press Enter after closing Notepad...'
-} else {
-    Write-Host 'Config.toml already exists.'
-}
+print("Setup complete! You are now in the Codex environment.")
+print("Launching interactive PowerShell... Type 'codex [your prompt]' to use Codex.")
+print("Type 'exit' to close.")
 
-Write-Host 'Setup complete! You are now in the Codex environment.'
-Write-Host 'Type ''codex [your prompt]'' to start using Codex.'
-Write-Host 'Type ''exit'' to close this PowerShell window.'
-# Window remains open at PowerShell prompt for interactive use
-'@
-    $code | Out-File -FilePath $env:TEMP\codex-setup.ps1 -Encoding UTF8
-    & $env:TEMP\codex-setup.ps1
-}"
+# Launch PowerShell with updated PATH and keep it open
+ps_command = f'$env:PATH = "{install_path};$env:PATH"; Write-Host "Codex ready! Type codex [your prompt] to start."'
+subprocess.call(['powershell.exe', '-NoExit', '-Command', ps_command])
