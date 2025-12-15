@@ -4,32 +4,34 @@ import marshal
 import textwrap
 
 ROUNDS = 10
-
 INPUT_FILE = "your_script.pyw"
 OUTPUT_FILE = "your_script_encrypted.pyw"
 
+# Read original source
 with open(INPUT_FILE, "r", encoding="utf-8") as f:
     source = f.read()
 
-data = source
+# Compile ONCE
+code_obj = compile(source, "<protected>", "exec")
+data = marshal.dumps(code_obj)
 
+# Encode MANY times
 for _ in range(ROUNDS):
-    code_obj = compile(data, "<protected>", "exec")
-    marshaled = marshal.dumps(code_obj)
-    compressed = zlib.compress(marshaled)
-    data = base64.b64encode(compressed).decode("ascii")
+    data = zlib.compress(data)
+    data = base64.b64encode(data)
 
-payload = data  # SAFE ASCII STRING
+# Convert to safe string
+payload = data.decode("ascii")
 
 final_code = f"""
 import base64, zlib, marshal
 
 data = "{payload}"
 
-decoded = base64.b64decode(data)
-decompressed = zlib.decompress(decoded)
-code = marshal.loads(decompressed)
+data = base64.b64decode(data)
+data = zlib.decompress(data)
 
+code = marshal.loads(data)
 exec(code)
 """
 
@@ -39,4 +41,4 @@ with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
     f.write(final_code)
 
 print("✔ Encryption successful")
-print(f"✔ Output file: {OUTPUT_FILE}")
+print("✔ Output:", OUTPUT_FILE)
