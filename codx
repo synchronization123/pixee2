@@ -1,86 +1,161 @@
-@echo off
-echo Starting Codex Environment...
-powershell -ExecutionPolicy Bypass -NoExit -Command "& { $code = @'
-# Define paths
-$username = $env:USERNAME
-$toolsPath = "C:\Users\$username\tools"
-$installPath = "$toolsPath\nodejs"
-$zipUrl = 'https://nodejs.org/dist/v24.12.0/node-v24.12.0-win-x64.zip'
-$zipPath = "$env:TEMP\nodejs.zip"
-$codexDir = "$env:USERPROFILE\.codex"
-$configPath = "$codexDir\config.toml"
-$extractTemp = "$env:TEMP\node_extract"
+import os
+import sys
+import zipfile
+import urllib.request
+import shutil
+import subprocess
+import tempfile
+import tkinter as tk
+from tkinter import scrolledtext, ttk
+import threading
+import queue
 
-# Function to check if Node.js is installed
-function Test-NodeInstalled {
-    return (Test-Path "$installPath\node.exe") -and (Test-Path "$installPath\npm.cmd")
-}
+# ------------------ PATHS ------------------
+USERNAME = os.getenv("USERNAME")
+USERPROFILE = os.getenv("USERPROFILE")
 
-# Function to check if Codex is installed
-function Test-CodexInstalled {
-    if (!(Test-NodeInstalled)) { return $false }
-    try {
-        npm list -g @openai/codex --depth=0 --silent 2>$null
-        return $?
-    } catch {
-        return $false
-    }
-}
+TOOLS_DIR = os.path.join(USERPROFILE, "tools")
 
-# Ensure directories exist
-New-Item -ItemType Directory -Force -Path $toolsPath | Out-Null
-New-Item -ItemType Directory -Force -Path $codexDir | Out-Null
+PYTHON_DIR = os.path.join(TOOLS_DIR, "python")
+PYTHON_EXE = os.path.join(PYTHON_DIR, "python.exe")
 
-Write-Host "Starting Codex setup..."
+NODE_DIR = os.path.join(TOOLS_DIR, "nodejs")
 
-# Add Node.js to PATH if installed
-if (Test-NodeInstalled) {
-    $env:PATH = "$installPath;$env:PATH"
-    Write-Host "Node.js already installed. PATH updated."
-} else {
-    Write-Host "Step 1: Downloading Node.js binaries..."
-    Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
+PYTHON_ZIP_URL = "https://www.python.org/ftp/python/3.12.2/python-3.12.2-embed-amd64.zip"
+GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
 
-    Write-Host "Step 2: Extracting Node.js to $installPath..."
-    New-Item -ItemType Directory -Force -Path $extractTemp | Out-Null
-    New-Item -ItemType Directory -Force -Path $installPath | Out-Null
-    Expand-Archive -Path $zipPath -DestinationPath $extractTemp -Force
-    $nodeFolder = Get-ChildItem -Path $extractTemp -Directory | Select-Object -First 1
-    if ($nodeFolder) {
-        Get-ChildItem -Path $nodeFolder.FullName -Recurse | Move-Item -Destination $installPath -Force
-        Remove-Item $nodeFolder.FullName -Recurse -Force
-    }
-    Remove-Item $extractTemp -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+NODE_ZIP_URL = "https://nodejs.org/dist/v24.12.0/node-v24.12.0-win-x64.zip"
 
-    Write-Host "Step 3: Adding Node.js to PATH..."
-    $env:PATH = "$installPath;$env:PATH"
-}
+CODEX_DIR = os.path.join(USERPROFILE, ".codex")
+CONFIG_PATH = os.path.join(CODEX_DIR, "config.toml")
 
-# Set npm prefix for portable global installs
-npm config set prefix $installPath
+# ------------------ GUI ------------------
+class SetupGUI:
+    def __init__(self, root):
+        self.root = root
+        root.title("Codex Portable Setup (No Admin)")
+        root.geometry("820x600")
 
-# Install Codex if not already
-if (!(Test-CodexInstalled)) {
-    Write-Host "Step 4: Installing @openai/codex globally..."
-    npm install -g @openai/codex
-} else {
-    Write-Host "Codex already installed."
-}
+        self.log_box = scrolledtext.ScrolledText(root, wrap=tk.WORD)
+        self.log_box.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-# Create/Open config.toml if it doesn''t exist
-if (!(Test-Path $configPath)) {
-    Write-Host "Step 5: Creating config.toml. Notepad will open for editing. Close it when done."
-    New-Item -ItemType File -Path $configPath -Force | Out-Null
-    Start-Process notepad $configPath
-    Write-Host "Configure your settings in the opened Notepad, then save and close."
-    Read-Host "Press Enter after closing Notepad..."
-} else {
-    Write-Host "Config.toml already exists."
-}
+        self.progress = ttk.Progressbar(root, mode="indeterminate")
+        self.progress.pack(fill=tk.X, padx=10)
 
-Write-Host "Setup complete! You are now in the Codex environment."
-Write-Host "Type ''codex [your prompt]'' to start using Codex."
-Write-Host "Type ''exit'' to close this PowerShell window."
-# Window remains open at PowerShell prompt for interactive use
-'@ ; $code | Out-File -FilePath $env:TEMP\codex-setup.ps1 -Encoding UTF8 ; & $env:TEMP\codex-setup.ps1 ; Remove-Item $env:TEMP\codex-setup.ps1 -Force -ErrorAction SilentlyContinue }"
+        self.status = tk.Label(root, text="Initializing...")
+        self.status.pack(pady=5)
+
+        self.q = queue.Queue()
+        self.root.after(100, self.process_queue)
+
+        threading.Thread(target=self.run, daemon=True).start()
+
+    # ---------- UI helpers ----------
+    def log(self, msg):
+        self.q.put(msg)
+
+    def set_status(self, msg):
+        self.q.put(f"[STATUS] {msg}")
+        self.status.config(text=msg)
+
+    def process_queue(self):
+        try:
+            while True:
+                m = self.q.get_nowait()
+                self.log_box.insert(tk.END, m + "\n")
+                self.log_box.see(tk.END)
+        except queue.Empty:
+            pass
+        self.root.after(100, self.process_queue)
+
+    # ---------- PYTHON ----------
+    def ensure_python(self):
+        if os.path.exists(PYTHON_EXE):
+            self.log("Portable Python already present.")
+            return
+
+        self.set_status("Installing portable Python...")
+        os.makedirs(PYTHON_DIR, exist_ok=True)
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as z:
+            urllib.request.urlretrieve(PYTHON_ZIP_URL, z.name)
+            zip_path = z.name
+
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(PYTHON_DIR)
+
+        os.remove(zip_path)
+
+        # Enable stdlib
+        pth = os.path.join(PYTHON_DIR, "python312._pth")
+        with open(pth, "a") as f:
+            f.write("\nimport site\n")
+
+        # Install pip
+        with tempfile.NamedTemporaryFile(delete=False) as gp:
+            urllib.request.urlretrieve(GET_PIP_URL, gp.name)
+            subprocess.run([PYTHON_EXE, gp.name], check=True)
+
+        self.log("Portable Python + pip installed.")
+
+    # ---------- NODE ----------
+    def ensure_node(self):
+        node_exe = os.path.join(NODE_DIR, "node.exe")
+        if os.path.exists(node_exe):
+            self.log("Node.js already present.")
+            return
+
+        self.set_status("Installing Node.js...")
+        os.makedirs(NODE_DIR, exist_ok=True)
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as z:
+            urllib.request.urlretrieve(NODE_ZIP_URL, z.name)
+            zip_path = z.name
+
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(TOOLS_DIR)
+
+        os.remove(zip_path)
+
+        extracted = next(d for d in os.listdir(TOOLS_DIR) if d.startswith("node-v"))
+        shutil.move(os.path.join(TOOLS_DIR, extracted), NODE_DIR)
+
+        self.log("Node.js installed.")
+
+    # ---------- CODEX ----------
+    def ensure_codex(self):
+        npm = os.path.join(NODE_DIR, "npm.cmd")
+        env = os.environ.copy()
+        env["PATH"] = NODE_DIR + ";" + env["PATH"]
+
+        subprocess.run([npm, "config", "set", "prefix", NODE_DIR], env=env)
+        subprocess.run([npm, "install", "-g", "@openai/codex"], env=env)
+
+        self.log("Codex installed.")
+
+    # ---------- MAIN ----------
+    def run(self):
+        self.progress.start()
+        os.makedirs(TOOLS_DIR, exist_ok=True)
+        os.makedirs(CODEX_DIR, exist_ok=True)
+
+        self.ensure_python()
+        self.ensure_node()
+        self.ensure_codex()
+
+        if not os.path.exists(CONFIG_PATH):
+            open(CONFIG_PATH, "w").close()
+            subprocess.Popen(["notepad.exe", CONFIG_PATH])
+
+        self.progress.stop()
+        self.set_status("Setup complete!")
+        self.log("✅ Codex environment ready")
+        self.log("Open PowerShell and run:")
+        self.log(f'$env:PATH="{NODE_DIR};$env:PATH"')
+        self.log("codex \"your prompt\"")
+
+# ------------------ ENTRY ------------------
+if __name__ == "__main__":
+    root = tk.Tk()
+    SetupGUI(root)
+    root.mainloop()
