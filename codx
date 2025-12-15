@@ -1,5 +1,4 @@
 import os
-import sys
 import zipfile
 import urllib.request
 import shutil
@@ -20,13 +19,12 @@ PYTHON_EXE = os.path.join(PYTHON_DIR, "python.exe")
 
 NODE_DIR = os.path.join(TOOLS_DIR, "nodejs")
 
-# 🔒 ALWAYS use this location
+# 🔒 FIXED Codex location
 CODEX_DIR = fr"C:\Users\{USERNAME}\.codex"
 CONFIG_PATH = os.path.join(CODEX_DIR, "config.toml")
 
 PYTHON_ZIP_URL = "https://www.python.org/ftp/python/3.12.2/python-3.12.2-embed-amd64.zip"
 GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
-
 NODE_ZIP_URL = "https://nodejs.org/dist/v24.12.0/node-v24.12.0-win-x64.zip"
 
 # ---------------- GUI ----------------
@@ -82,7 +80,6 @@ class SetupGUI:
 
         with zipfile.ZipFile(zip_path) as z:
             z.extractall(PYTHON_DIR)
-
         os.remove(zip_path)
 
         pth = os.path.join(PYTHON_DIR, "python312._pth")
@@ -109,7 +106,6 @@ class SetupGUI:
 
         with zipfile.ZipFile(zip_path) as z:
             z.extractall(TOOLS_DIR)
-
         os.remove(zip_path)
 
         extracted = next(d for d in os.listdir(TOOLS_DIR) if d.startswith("node-v"))
@@ -120,8 +116,8 @@ class SetupGUI:
     # ---------- USER PATH ----------
     def set_user_path(self):
         self.set_status("Updating user PATH...")
-
         current = os.environ.get("PATH", "")
+
         if NODE_DIR.lower() not in current.lower():
             subprocess.run(
                 ["setx", "PATH", current + ";" + NODE_DIR],
@@ -129,7 +125,6 @@ class SetupGUI:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
-
         self.log("✔ User PATH updated")
 
     # ---------- CODEX ----------
@@ -145,8 +140,7 @@ class SetupGUI:
 
         self.log("✔ Codex installed")
 
-        # 🔐 Fix PowerShell execution policy (CurrentUser only)
-        self.log("Setting PowerShell ExecutionPolicy to RemoteSigned (CurrentUser)")
+        # ExecutionPolicy fix
         subprocess.run(
             [
                 "powershell.exe",
@@ -157,25 +151,52 @@ class SetupGUI:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )
+        self.log("✔ PowerShell ExecutionPolicy set")
 
-        self.log("✔ ExecutionPolicy set successfully")
+    # ---------- CONFIG ----------
+    def ensure_config(self):
+        self.set_status("Validating config.toml...")
+
+        os.makedirs(CODEX_DIR, exist_ok=True)
+
+        recreate = False
+        if not os.path.exists(CONFIG_PATH):
+            recreate = True
+        elif os.path.getsize(CONFIG_PATH) == 0:
+            os.remove(CONFIG_PATH)
+            recreate = True
+
+        if recreate:
+            self.log("config.toml missing or empty — recreating")
+
+            subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-Command",
+                    (
+                        '$path = "$env:USERPROFILE\\.codex\\config.toml";'
+                        'New-Item -ItemType File -Path $path -Force | Out-Null'
+                    )
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+
+            subprocess.Popen(["notepad.exe", CONFIG_PATH])
+            self.log("✔ config.toml created and opened")
+        else:
+            self.log("✔ config.toml already present with content")
 
     # ---------- MAIN ----------
     def run(self):
         self.progress.start()
 
-        os.makedirs(TOOLS_DIR, exist_ok=True)
-        os.makedirs(CODEX_DIR, exist_ok=True)
-
         self.ensure_python()
         self.ensure_node()
         self.set_user_path()
         self.ensure_codex()
-
-        # Always use fixed config location
-        if not os.path.exists(CONFIG_PATH):
-            open(CONFIG_PATH, "w").close()
-            subprocess.Popen(["notepad.exe", CONFIG_PATH])
+        self.ensure_config()
 
         self.progress.stop()
         self.set_status("Setup complete!")
