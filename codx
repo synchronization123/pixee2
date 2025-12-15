@@ -5,6 +5,10 @@ import urllib.request
 import shutil
 import subprocess
 import tempfile
+import tkinter as tk
+from tkinter import scrolledtext, messagebox, ttk
+import threading
+import queue
 
 # Define paths
 username = os.getenv('USERNAME')
@@ -14,79 +18,163 @@ zip_url = "https://nodejs.org/dist/v24.12.0/node-v24.12.0-win-x64.zip"
 codex_dir = os.path.join(os.getenv('USERPROFILE'), ".codex")
 config_path = os.path.join(codex_dir, "config.toml")
 
-def test_node_installed():
-    node_exe = os.path.join(install_path, "node.exe")
-    npm_cmd = os.path.join(install_path, "npm.cmd")
-    return os.path.exists(node_exe) and os.path.exists(npm_cmd)
-
-def test_codex_installed():
-    if not test_node_installed():
-        return False
-    try:
+class SetupGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Codex Setup")
+        self.root.geometry("800x600")
+        
+        # Log text area
+        self.log_text = scrolledtext.ScrolledText(root, wrap=tk.WORD, width=90, height=30)
+        self.log_text.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+        
+        # Progress bar
+        self.progress = ttk.Progressbar(root, mode='indeterminate')
+        self.progress.pack(pady=5, fill=tk.X, padx=10)
+        
+        # Status label
+        self.status_label = tk.Label(root, text="Initializing...")
+        self.status_label.pack(pady=5)
+        
+        # Queue for thread-safe updates
+        self.queue = queue.Queue()
+        self.root.after(100, self.process_queue)
+        
+        # Start setup in thread
+        self.setup_thread = threading.Thread(target=self.run_setup)
+        self.setup_thread.daemon = True
+        self.setup_thread.start()
+    
+    def log(self, message):
+        self.queue.put(message)
+    
+    def process_queue(self):
+        try:
+            while True:
+                message = self.queue.get_nowait()
+                self.log_text.insert(tk.END, message + "\n")
+                self.log_text.see(tk.END)
+        except queue.Empty:
+            pass
+        self.root.after(100, self.process_queue)
+    
+    def update_status(self, status):
+        self.queue.put(f"[STATUS] {status}")
+        self.status_label.config(text=status)
+    
+    def run_setup(self):
+        def test_node_installed():
+            node_exe = os.path.join(install_path, "node.exe")
+            npm_cmd = os.path.join(install_path, "npm.cmd")
+            return os.path.exists(node_exe) and os.path.exists(npm_cmd)
+        
+        def test_codex_installed():
+            if not test_node_installed():
+                return False
+            try:
+                npm_path = os.path.join(install_path, "npm.cmd")
+                result = subprocess.run([npm_path, "list", "-g", "@openai/codex", "--depth=0", "--silent"],
+                                        capture_output=True, text=True, cwd=install_path)
+                return result.returncode == 0
+            except:
+                return False
+        
+        self.log("Starting Codex setup...")
+        self.update_status("Creating directories...")
+        
+        # Create directories
+        os.makedirs(tools_path, exist_ok=True)
+        os.makedirs(codex_dir, exist_ok=True)
+        self.log("Directories created.")
+        
+        if test_node_installed():
+            self.log("Node.js already installed. Updating PATH...")
+            os.environ['PATH'] = install_path + ';' + os.environ['PATH']
+            self.update_status("Node.js ready.")
+        else:
+            self.update_status("Downloading Node.js...")
+            self.log("Step 1: Downloading Node.js binaries...")
+            with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp_zip:
+                zip_path = tmp_zip.name
+            urllib.request.urlretrieve(zip_url, zip_path)
+            self.log("Download complete.")
+            
+            self.update_status("Extracting Node.js...")
+            self.log("Step 2: Extracting Node.js...")
+            with tempfile.TemporaryDirectory() as extract_temp:
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    zip_ref.extractall(extract_temp)
+                # Find the extracted node folder
+                node_folders = [d for d in os.listdir(extract_temp) if d.startswith('node-v')]
+                if node_folders:
+                    node_full = os.path.join(extract_temp, node_folders[0])
+                    os.makedirs(install_path, exist_ok=True)
+                    for item in os.listdir(node_full):
+                        src = os.path.join(node_full, item)
+                        dst = os.path.join(install_path, item)
+                        if os.path.isdir(src):
+                            shutil.copytree(src, dst, dirs_exist_ok=True)
+                        else:
+                            shutil.copy2(src, dst)
+            os.remove(zip_path)
+            os.environ['PATH'] = install_path + ';' + os.environ['PATH']
+            self.log("Step 3: Node.js extracted and PATH updated.")
+            self.update_status("Node.js installed.")
+        
+        # Set npm prefix
+        self.update_status("Configuring npm...")
         npm_path = os.path.join(install_path, "npm.cmd")
-        result = subprocess.run([npm_path, "list", "-g", "@openai/codex", "--depth=0", "--silent"],
-                                capture_output=True, text=True, cwd=install_path)
-        return result.returncode == 0
-    except:
-        return False
+        subprocess.run([npm_path, "config", "set", "prefix", install_path], cwd=install_path)
+        self.log("npm configured for portable installs.")
+        
+        if not test_codex_installed():
+            self.update_status("Installing Codex...")
+            self.log("Step 4: Installing @openai/codex globally...")
+            subprocess.run([npm_path, "install", "-g", "@openai/codex"], cwd=install_path)
+            self.log("Codex installation complete.")
+        else:
+            self.log("Codex already installed.")
+        
+        if not os.path.exists(config_path):
+            self.log("Step 5: Creating config.toml...")
+            with open(config_path, 'w') as f:
+                pass  # Create empty file
+            self.root.after(0, lambda: self.open_notepad())
+        else:
+            self.log("Config.toml already exists.")
+            self.complete_setup()
+        
+        self.progress.stop()
+    
+    def open_notepad(self):
+        self.log("Opening Notepad for editing config.toml. Close it when done.")
+        notepad_proc = subprocess.Popen(["notepad.exe", config_path])
+        
+        def check_notepad():
+            if notepad_proc.poll() is not None:  # Notepad closed
+                self.log("Notepad closed. Continuing setup.")
+                self.complete_setup()
+            else:
+                self.root.after(1000, check_notepad)
+        
+        check_notepad()
+    
+    def complete_setup(self):
+        self.update_status("Setup complete! Codex ready.")
+        self.log("Setup complete! You are now in the Codex environment.")
+        self.log("Type 'codex [your prompt]' in a terminal or PowerShell to use Codex.")
+        self.log("This GUI will remain open. Close the window when done.")
+        
+        # Add a button to launch PowerShell if desired
+        launch_btn = tk.Button(self.root, text="Launch PowerShell (Codex Ready)", 
+                               command=self.launch_powershell)
+        launch_btn.pack(pady=10)
+    
+    def launch_powershell(self):
+        ps_command = f'$env:PATH = "{install_path};$env:PATH"; Write-Host "Codex ready! Type codex [your prompt] to start."'
+        subprocess.Popen(['powershell.exe', '-NoExit', '-Command', ps_command])
 
-# Create directories
-os.makedirs(tools_path, exist_ok=True)
-os.makedirs(codex_dir, exist_ok=True)
-
-if test_node_installed():
-    print("Node.js already installed. Updating PATH...")
-    os.environ['PATH'] = install_path + ';' + os.environ['PATH']
-else:
-    print("Step 1: Downloading Node.js binaries...")
-    with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp_zip:
-        zip_path = tmp_zip.name
-    urllib.request.urlretrieve(zip_url, zip_path)
-
-    print("Step 2: Extracting Node.js...")
-    with tempfile.TemporaryDirectory() as extract_temp:
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(extract_temp)
-        # Find the extracted node folder (e.g., node-v24.12.0-win-x64)
-        node_folders = [d for d in os.listdir(extract_temp) if d.startswith('node-v')]
-        if node_folders:
-            node_full = os.path.join(extract_temp, node_folders[0])
-            os.makedirs(install_path, exist_ok=True)
-            for item in os.listdir(node_full):
-                src = os.path.join(node_full, item)
-                dst = os.path.join(install_path, item)
-                if os.path.isdir(src):
-                    shutil.copytree(src, dst, dirs_exist_ok=True)
-                else:
-                    shutil.copy2(src, dst)
-    os.remove(zip_path)
-    os.environ['PATH'] = install_path + ';' + os.environ['PATH']
-    print("Step 3: Node.js extracted and PATH updated.")
-
-# Set npm prefix for portable globals
-npm_path = os.path.join(install_path, "npm.cmd")
-subprocess.run([npm_path, "config", "set", "prefix", install_path], cwd=install_path)
-
-if not test_codex_installed():
-    print("Step 4: Installing @openai/codex globally...")
-    subprocess.run([npm_path, "install", "-g", "@openai/codex"], cwd=install_path)
-else:
-    print("Codex already installed.")
-
-if not os.path.exists(config_path):
-    print("Step 5: Creating config.toml. Opening Notepad for editing...")
-    with open(config_path, 'w') as f:
-        pass  # Create empty file
-    notepad_proc = subprocess.Popen(["notepad.exe", config_path])
-    input("Configure your settings, save, and close Notepad. Press Enter here to continue...")
-    notepad_proc.wait()  # Optional: wait for close
-else:
-    print("Config.toml already exists.")
-
-print("Setup complete! You are now in the Codex environment.")
-print("Launching interactive PowerShell... Type 'codex [your prompt]' to use Codex.")
-print("Type 'exit' to close.")
-
-# Launch PowerShell with updated PATH and keep it open
-ps_command = f'$env:PATH = "{install_path};$env:PATH"; Write-Host "Codex ready! Type codex [your prompt] to start."'
-subprocess.call(['powershell.exe', '-NoExit', '-Command', ps_command])
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = SetupGUI(root)
+    root.mainloop()
