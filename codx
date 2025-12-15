@@ -1,0 +1,74 @@
+@echo off
+echo Starting Codex Environment...
+powershell -ExecutionPolicy Bypass -NoExit -Command "& {
+    # Define paths
+    $username = $env:USERNAME
+    $toolsPath = \"C:\Users\$username\tools\"
+    $installPath = \"$toolsPath\nodejs\"
+    $zipUrl = \"https://nodejs.org/dist/v24.12.0/node-v24.12.0-win-x64.zip\"
+    $zipPath = \"$env:TEMP\nodejs.zip\"
+    $codexDir = \"$env:USERPROFILE\.codex\"
+    $configPath = \"$codexDir\config.toml\"
+
+    # Function to check if Node.js is installed
+    function Test-NodeInstalled {
+        return (Test-Path \"$installPath\node.exe\") -and (Test-Path \"$installPath\npm.cmd\")
+    }
+
+    # Function to check if Codex is installed
+    function Test-CodexInstalled {
+        if (!(Test-NodeInstalled)) { return $false }
+        try {
+            $null = & \"$installPath\node.exe\" \"$installPath\node_modules\npm\bin\npm-cli.js\" list -g @openai/codex --silent 2>&1
+            return $?
+        } catch {
+            return $false
+        }
+    }
+
+    # Ensure directories exist
+    New-Item -ItemType Directory -Force -Path $toolsPath | Out-Null
+    New-Item -ItemType Directory -Force -Path $codexDir | Out-Null
+
+    # Add Node.js to PATH if installed
+    if (Test-NodeInstalled) {
+        $env:PATH = \"$installPath;$env:PATH\"
+        Write-Host \"Node.js already installed. PATH updated.\"
+    } else {
+        Write-Host \"Step 1: Downloading Node.js binaries...\"
+        Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
+
+        Write-Host \"Step 2: Extracting Node.js to $installPath...\"
+        Expand-Archive -Path $zipPath -DestinationPath $installPath -Force
+
+        Write-Host \"Step 3: Adding Node.js to PATH...\"
+        $env:PATH = \"$installPath;$env:PATH\"
+
+        Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+    }
+
+    # Install Codex if not already
+    if (!(Test-CodexInstalled)) {
+        Write-Host \"Step 4: Installing @openai/codex globally...\"
+        npm install -g @openai/codex
+    } else {
+        Write-Host \"Codex already installed.\"
+    }
+
+    # Create/Open config.toml if it doesn't exist
+    if (!(Test-Path $configPath)) {
+        Write-Host \"Step 5: Creating config.toml. Notepad will open for editing. Close it when done.\"
+        New-Item -ItemType File -Path $configPath -Force | Out-Null
+        Start-Process notepad $configPath
+        Write-Host \"Configure your settings in the opened Notepad, then save and close.\"
+        Read-Host \"Press Enter after closing Notepad...\"
+    } else {
+        Write-Host \"Config.toml already exists.\"
+    }
+
+    Write-Host \"Setup complete! You are now in the Codex environment.\"
+    Write-Host \"Type 'codex [your prompt]' to start using Codex.\"
+    Write-Host \"Type 'exit' to close this window.\"
+    # Keep the window open for interactive use
+    Read-Host \"Press Enter to exit...\"
+}"
