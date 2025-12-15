@@ -1,185 +1,48 @@
-import os
-import sys
-import zipfile
-import urllib.request
-import shutil
-import subprocess
-import tempfile
-import tkinter as tk
-from tkinter import scrolledtext, ttk
-import threading
-import queue
+import base64
+import zlib
+import marshal
+import textwrap
 
-# ---------------- PATHS ----------------
-USERPROFILE = os.getenv("USERPROFILE")
-TOOLS_DIR = os.path.join(USERPROFILE, "tools")
+ROUNDS = 10  # number of encryption layers
 
-PYTHON_DIR = os.path.join(TOOLS_DIR, "python")
-PYTHON_EXE = os.path.join(PYTHON_DIR, "python.exe")
+def encrypt(code):
+    compiled = compile(code, "<protected>", "exec")
+    marshaled = marshal.dumps(compiled)
+    compressed = zlib.compress(marshaled)
+    encoded = base64.b64encode(compressed)
+    return encoded
 
-NODE_DIR = os.path.join(TOOLS_DIR, "nodejs")
+def multi_encrypt(code, rounds):
+    data = code.encode()
+    for _ in range(rounds):
+        data = encrypt(data.decode(errors="ignore"))
+    return data
 
-CODEX_DIR = os.path.join(USERPROFILE, ".codex")
-CONFIG_PATH = os.path.join(CODEX_DIR, "config.toml")
+# ---- INPUT FILE ----
+INPUT_FILE = "your_script.pyw"
+OUTPUT_FILE = "your_script_encrypted.pyw"
 
-PYTHON_ZIP_URL = "https://www.python.org/ftp/python/3.12.2/python-3.12.2-embed-amd64.zip"
-GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
+with open(INPUT_FILE, "r", encoding="utf-8") as f:
+    original_code = f.read()
 
-NODE_ZIP_URL = "https://nodejs.org/dist/v24.12.0/node-v24.12.0-win-x64.zip"
+encrypted = multi_encrypt(original_code, ROUNDS)
 
-# ---------------- GUI ----------------
-class SetupGUI:
-    def __init__(self, root):
-        self.root = root
-        root.title("Codex Setup (No Admin)")
-        root.geometry("820x620")
+final_code = f'''
+import base64, zlib, marshal
 
-        self.log_box = scrolledtext.ScrolledText(root, wrap=tk.WORD)
-        self.log_box.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+data = {encrypted}
 
-        self.progress = ttk.Progressbar(root, mode="indeterminate")
-        self.progress.pack(fill=tk.X, padx=10)
+for _ in range({ROUNDS}):
+    data = marshal.loads(zlib.decompress(base64.b64decode(data)))
 
-        self.status = tk.Label(root, text="Initializing...")
-        self.status.pack(pady=5)
+exec(data)
+'''
 
-        self.q = queue.Queue()
-        self.root.after(100, self.process_queue)
+# Beautify output
+final_code = textwrap.dedent(final_code)
 
-        threading.Thread(target=self.run, daemon=True).start()
+with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+    f.write(final_code)
 
-    # ---------- UI ----------
-    def log(self, msg):
-        self.q.put(msg)
-
-    def set_status(self, msg):
-        self.q.put(f"[STATUS] {msg}")
-        self.status.config(text=msg)
-
-    def process_queue(self):
-        try:
-            while True:
-                m = self.q.get_nowait()
-                self.log_box.insert(tk.END, m + "\n")
-                self.log_box.see(tk.END)
-        except queue.Empty:
-            pass
-        self.root.after(100, self.process_queue)
-
-    # ---------- PYTHON ----------
-    def ensure_python(self):
-        if os.path.exists(PYTHON_EXE):
-            self.log("✔ Portable Python already installed")
-            return
-
-        self.set_status("Installing portable Python...")
-        os.makedirs(PYTHON_DIR, exist_ok=True)
-
-        zip_path = tempfile.mktemp(".zip")
-        urllib.request.urlretrieve(PYTHON_ZIP_URL, zip_path)
-
-        with zipfile.ZipFile(zip_path) as z:
-            z.extractall(PYTHON_DIR)
-
-        os.remove(zip_path)
-
-        pth = os.path.join(PYTHON_DIR, "python312._pth")
-        with open(pth, "a") as f:
-            f.write("\nimport site\n")
-
-        get_pip = tempfile.mktemp(".py")
-        urllib.request.urlretrieve(GET_PIP_URL, get_pip)
-        subprocess.run([PYTHON_EXE, get_pip], check=True)
-
-        self.log("✔ Python + pip installed")
-
-    # ---------- NODE ----------
-    def ensure_node(self):
-        if os.path.exists(os.path.join(NODE_DIR, "node.exe")):
-            self.log("✔ Node.js already installed")
-            return
-
-        self.set_status("Installing Node.js...")
-        os.makedirs(TOOLS_DIR, exist_ok=True)
-
-        zip_path = tempfile.mktemp(".zip")
-        urllib.request.urlretrieve(NODE_ZIP_URL, zip_path)
-
-        with zipfile.ZipFile(zip_path) as z:
-            z.extractall(TOOLS_DIR)
-
-        os.remove(zip_path)
-
-        extracted = next(d for d in os.listdir(TOOLS_DIR) if d.startswith("node-v"))
-        shutil.move(os.path.join(TOOLS_DIR, extracted), NODE_DIR)
-
-        self.log("✔ Node.js installed")
-
-    # ---------- PATH ----------
-    def set_user_path(self):
-        self.set_status("Updating user PATH...")
-
-        paths_to_add = [NODE_DIR]
-        current = os.environ.get("PATH", "")
-
-        for p in paths_to_add:
-            if p.lower() not in current.lower():
-                subprocess.run(
-                    ["setx", "PATH", current + ";" + p],
-                    shell=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
-
-        self.log("✔ User PATH updated (restart terminal if needed)")
-
-    # ---------- CODEX ----------
-    def ensure_codex(self):
-        self.set_status("Installing Codex...")
-        npm = os.path.join(NODE_DIR, "npm.cmd")
-
-        env = os.environ.copy()
-        env["PATH"] = NODE_DIR + ";" + env["PATH"]
-
-        subprocess.run([npm, "config", "set", "prefix", NODE_DIR], env=env)
-        subprocess.run([npm, "install", "-g", "@openai/codex"], env=env)
-
-        self.log("✔ Codex installed")
-
-    # ---------- MAIN ----------
-    def run(self):
-        self.progress.start()
-        os.makedirs(CODEX_DIR, exist_ok=True)
-
-        self.ensure_python()
-        self.ensure_node()
-        self.set_user_path()
-        self.ensure_codex()
-
-        if not os.path.exists(CONFIG_PATH):
-            open(CONFIG_PATH, "w").close()
-            subprocess.Popen(["notepad.exe", CONFIG_PATH])
-
-        self.progress.stop()
-        self.set_status("Setup complete!")
-
-        self.log("✅ Type in PowerShell:")
-        self.log("codex \"your prompt\"")
-
-        btn = tk.Button(
-            self.root,
-            text="Open PowerShell (Codex Ready)",
-            command=self.open_powershell
-        )
-        btn.pack(pady=10)
-
-    # ---------- POWERSHELL ----------
-    def open_powershell(self):
-        ps = f'$env:PATH="{NODE_DIR};$env:PATH"'
-        subprocess.Popen(["powershell.exe", "-NoExit", "-Command", ps])
-
-# ---------------- ENTRY ----------------
-if __name__ == "__main__":
-    root = tk.Tk()
-    SetupGUI(root)
-    root.mainloop()
+print("✔ Encryption complete!")
+print(f"✔ Encrypted file saved as: {OUTPUT_FILE}")
