@@ -3,46 +3,48 @@ import zlib
 import marshal
 import textwrap
 
-ROUNDS = 10  # number of encryption layers
+ROUNDS = 10
 
-def encrypt(code):
-    compiled = compile(code, "<protected>", "exec")
+def encrypt_layer(code_bytes):
+    compiled = compile(code_bytes, "<secure>", "exec")
     marshaled = marshal.dumps(compiled)
     compressed = zlib.compress(marshaled)
     encoded = base64.b64encode(compressed)
     return encoded
 
-def multi_encrypt(code, rounds):
-    data = code.encode()
-    for _ in range(rounds):
-        data = encrypt(data.decode(errors="ignore"))
-    return data
-
-# ---- INPUT FILE ----
+# -------- FILES --------
 INPUT_FILE = "your_script.pyw"
 OUTPUT_FILE = "your_script_encrypted.pyw"
 
 with open(INPUT_FILE, "r", encoding="utf-8") as f:
-    original_code = f.read()
+    code = f.read().encode()
 
-encrypted = multi_encrypt(original_code, ROUNDS)
+data = code
+for _ in range(ROUNDS):
+    data = encrypt_layer(data)
+
+# Convert bytes → safe string
+payload = data.decode()
 
 final_code = f'''
 import base64, zlib, marshal
 
-data = {encrypted}
+data = "{payload}"
 
 for _ in range({ROUNDS}):
-    data = marshal.loads(zlib.decompress(base64.b64decode(data)))
+    data = marshal.loads(
+        zlib.decompress(
+            base64.b64decode(data)
+        )
+    )
 
 exec(data)
 '''
 
-# Beautify output
 final_code = textwrap.dedent(final_code)
 
 with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
     f.write(final_code)
 
-print("✔ Encryption complete!")
-print(f"✔ Encrypted file saved as: {OUTPUT_FILE}")
+print("✔ Encryption successful")
+print(f"✔ Output file: {OUTPUT_FILE}")
