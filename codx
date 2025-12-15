@@ -1,44 +1,202 @@
-import base64
-import zlib
-import marshal
-import textwrap
+import os
+import sys
+import zipfile
+import urllib.request
+import shutil
+import subprocess
+import tempfile
+import tkinter as tk
+from tkinter import scrolledtext, ttk
+import threading
+import queue
 
-ROUNDS = 10
-INPUT_FILE = "your_script.pyw"
-OUTPUT_FILE = "your_script_encrypted.pyw"
+# ---------------- PATHS (FIXED) ----------------
+USERNAME = os.getenv("USERNAME")
 
-# Read original source
-with open(INPUT_FILE, "r", encoding="utf-8") as f:
-    source = f.read()
+TOOLS_DIR = fr"C:\Users\{USERNAME}\tools"
 
-# Compile ONCE
-code_obj = compile(source, "<protected>", "exec")
-data = marshal.dumps(code_obj)
+PYTHON_DIR = os.path.join(TOOLS_DIR, "python")
+PYTHON_EXE = os.path.join(PYTHON_DIR, "python.exe")
 
-# Encode MANY times
-for _ in range(ROUNDS):
-    data = zlib.compress(data)
-    data = base64.b64encode(data)
+NODE_DIR = os.path.join(TOOLS_DIR, "nodejs")
 
-# Convert to safe string
-payload = data.decode("ascii")
+# 🔒 ALWAYS use this location
+CODEX_DIR = fr"C:\Users\{USERNAME}\.codex"
+CONFIG_PATH = os.path.join(CODEX_DIR, "config.toml")
 
-final_code = f"""
-import base64, zlib, marshal
+PYTHON_ZIP_URL = "https://www.python.org/ftp/python/3.12.2/python-3.12.2-embed-amd64.zip"
+GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
 
-data = "{payload}"
+NODE_ZIP_URL = "https://nodejs.org/dist/v24.12.0/node-v24.12.0-win-x64.zip"
 
-data = base64.b64decode(data)
-data = zlib.decompress(data)
+# ---------------- GUI ----------------
+class SetupGUI:
+    def __init__(self, root):
+        self.root = root
+        root.title("Codex Setup (No Admin)")
+        root.geometry("820x620")
 
-code = marshal.loads(data)
-exec(code)
-"""
+        self.log_box = scrolledtext.ScrolledText(root, wrap=tk.WORD)
+        self.log_box.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-final_code = textwrap.dedent(final_code)
+        self.progress = ttk.Progressbar(root, mode="indeterminate")
+        self.progress.pack(fill=tk.X, padx=10)
 
-with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-    f.write(final_code)
+        self.status = tk.Label(root, text="Initializing...")
+        self.status.pack(pady=5)
 
-print("✔ Encryption successful")
-print("✔ Output:", OUTPUT_FILE)
+        self.q = queue.Queue()
+        self.root.after(100, self.process_queue)
+
+        threading.Thread(target=self.run, daemon=True).start()
+
+    # ---------- UI ----------
+    def log(self, msg):
+        self.q.put(msg)
+
+    def set_status(self, msg):
+        self.q.put(f"[STATUS] {msg}")
+        self.status.config(text=msg)
+
+    def process_queue(self):
+        try:
+            while True:
+                m = self.q.get_nowait()
+                self.log_box.insert(tk.END, m + "\n")
+                self.log_box.see(tk.END)
+        except queue.Empty:
+            pass
+        self.root.after(100, self.process_queue)
+
+    # ---------- PYTHON ----------
+    def ensure_python(self):
+        if os.path.exists(PYTHON_EXE):
+            self.log("✔ Portable Python already installed")
+            return
+
+        self.set_status("Installing portable Python...")
+        os.makedirs(PYTHON_DIR, exist_ok=True)
+
+        zip_path = tempfile.mktemp(".zip")
+        urllib.request.urlretrieve(PYTHON_ZIP_URL, zip_path)
+
+        with zipfile.ZipFile(zip_path) as z:
+            z.extractall(PYTHON_DIR)
+
+        os.remove(zip_path)
+
+        pth = os.path.join(PYTHON_DIR, "python312._pth")
+        with open(pth, "a") as f:
+            f.write("\nimport site\n")
+
+        get_pip = tempfile.mktemp(".py")
+        urllib.request.urlretrieve(GET_PIP_URL, get_pip)
+        subprocess.run([PYTHON_EXE, get_pip], check=True)
+
+        self.log("✔ Python + pip installed")
+
+    # ---------- NODE ----------
+    def ensure_node(self):
+        if os.path.exists(os.path.join(NODE_DIR, "node.exe")):
+            self.log("✔ Node.js already installed")
+            return
+
+        self.set_status("Installing Node.js...")
+        os.makedirs(TOOLS_DIR, exist_ok=True)
+
+        zip_path = tempfile.mktemp(".zip")
+        urllib.request.urlretrieve(NODE_ZIP_URL, zip_path)
+
+        with zipfile.ZipFile(zip_path) as z:
+            z.extractall(TOOLS_DIR)
+
+        os.remove(zip_path)
+
+        extracted = next(d for d in os.listdir(TOOLS_DIR) if d.startswith("node-v"))
+        shutil.move(os.path.join(TOOLS_DIR, extracted), NODE_DIR)
+
+        self.log("✔ Node.js installed")
+
+    # ---------- USER PATH ----------
+    def set_user_path(self):
+        self.set_status("Updating user PATH...")
+
+        current = os.environ.get("PATH", "")
+        if NODE_DIR.lower() not in current.lower():
+            subprocess.run(
+                ["setx", "PATH", current + ";" + NODE_DIR],
+                shell=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+
+        self.log("✔ User PATH updated")
+
+    # ---------- CODEX ----------
+    def ensure_codex(self):
+        self.set_status("Installing Codex...")
+
+        npm = os.path.join(NODE_DIR, "npm.cmd")
+        env = os.environ.copy()
+        env["PATH"] = NODE_DIR + ";" + env["PATH"]
+
+        subprocess.run([npm, "config", "set", "prefix", NODE_DIR], env=env)
+        subprocess.run([npm, "install", "-g", "@openai/codex"], env=env)
+
+        self.log("✔ Codex installed")
+
+        # 🔐 Fix PowerShell execution policy (CurrentUser only)
+        self.log("Setting PowerShell ExecutionPolicy to RemoteSigned (CurrentUser)")
+        subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-Command",
+                "Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force"
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+
+        self.log("✔ ExecutionPolicy set successfully")
+
+    # ---------- MAIN ----------
+    def run(self):
+        self.progress.start()
+
+        os.makedirs(TOOLS_DIR, exist_ok=True)
+        os.makedirs(CODEX_DIR, exist_ok=True)
+
+        self.ensure_python()
+        self.ensure_node()
+        self.set_user_path()
+        self.ensure_codex()
+
+        # Always use fixed config location
+        if not os.path.exists(CONFIG_PATH):
+            open(CONFIG_PATH, "w").close()
+            subprocess.Popen(["notepad.exe", CONFIG_PATH])
+
+        self.progress.stop()
+        self.set_status("Setup complete!")
+
+        self.log("✅ Usage:")
+        self.log("codex \"your prompt\"")
+
+        btn = tk.Button(
+            self.root,
+            text="Open PowerShell (Codex Ready)",
+            command=self.open_powershell
+        )
+        btn.pack(pady=10)
+
+    # ---------- POWERSHELL ----------
+    def open_powershell(self):
+        ps_cmd = f'$env:PATH="{NODE_DIR};$env:PATH"'
+        subprocess.Popen(["powershell.exe", "-NoExit", "-Command", ps_cmd])
+
+# ---------------- ENTRY ----------------
+if __name__ == "__main__":
+    root = tk.Tk()
+    SetupGUI(root)
+    root.mainloop()
