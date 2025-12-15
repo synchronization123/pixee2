@@ -176,7 +176,7 @@ class SetupGUI:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
-            self.log("✔ config.toml created (silent)")
+            self.log("✔ config.toml created (empty)")
         else:
             self.log("✔ config.toml already present")
 
@@ -193,8 +193,16 @@ class SetupGUI:
         self.progress.stop()
         self.set_status("Setup complete!")
 
+        self.log("")
+        self.log("ℹ IMPORTANT NOTE:")
+        self.log("If config.toml is empty, navigate to:")
+        self.log(f"C:\\Users\\{USERNAME}\\.codex")
+        self.log("and add the required data from:")
+        self.log("https://hub.ai.com")
+        self.log("")
+
         self.log("✅ Usage:")
-        self.log("codex \"your prompt\"")
+        self.log('codex "your prompt"')
 
         btn = tk.Button(
             self.root,
