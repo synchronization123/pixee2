@@ -1,5 +1,4 @@
 import os
-import sys
 import zipfile
 import urllib.request
 import shutil
@@ -10,10 +9,8 @@ from tkinter import scrolledtext, ttk
 import threading
 import queue
 
-# ------------------ PATHS ------------------
-USERNAME = os.getenv("USERNAME")
+# ---------------- PATHS ----------------
 USERPROFILE = os.getenv("USERPROFILE")
-
 TOOLS_DIR = os.path.join(USERPROFILE, "tools")
 
 PYTHON_DIR = os.path.join(TOOLS_DIR, "python")
@@ -21,23 +18,23 @@ PYTHON_EXE = os.path.join(PYTHON_DIR, "python.exe")
 
 NODE_DIR = os.path.join(TOOLS_DIR, "nodejs")
 
-PYTHON_ZIP_URL = "https://www.python.org/ftp/python/3.12.2/python-3.12.2-embed-amd64.zip"
-GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
-
-NODE_ZIP_URL = "https://nodejs.org/dist/v24.12.0/node-v24.12.0-win-x64.zip"
-
 CODEX_DIR = os.path.join(USERPROFILE, ".codex")
 CONFIG_PATH = os.path.join(CODEX_DIR, "config.toml")
 
-# ------------------ GUI ------------------
+# ---------------- URLS ----------------
+PYTHON_ZIP = "https://www.python.org/ftp/python/3.12.2/python-3.12.2-embed-amd64.zip"
+GET_PIP = "https://bootstrap.pypa.io/get-pip.py"
+NODE_ZIP = "https://nodejs.org/dist/v24.12.0/node-v24.12.0-win-x64.zip"
+
+# ---------------- GUI ----------------
 class SetupGUI:
     def __init__(self, root):
         self.root = root
-        root.title("Codex Portable Setup (No Admin)")
+        root.title("Codex Setup (No Admin)")
         root.geometry("820x600")
 
-        self.log_box = scrolledtext.ScrolledText(root, wrap=tk.WORD)
-        self.log_box.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.logbox = scrolledtext.ScrolledText(root)
+        self.logbox.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         self.progress = ttk.Progressbar(root, mode="indeterminate")
         self.progress.pack(fill=tk.X, padx=10)
@@ -45,25 +42,25 @@ class SetupGUI:
         self.status = tk.Label(root, text="Initializing...")
         self.status.pack(pady=5)
 
-        self.q = queue.Queue()
-        self.root.after(100, self.process_queue)
+        self.queue = queue.Queue()
+        root.after(100, self.process_queue)
 
         threading.Thread(target=self.run, daemon=True).start()
 
-    # ---------- UI helpers ----------
+    # ---------- UI ----------
     def log(self, msg):
-        self.q.put(msg)
+        self.queue.put(msg)
 
     def set_status(self, msg):
-        self.q.put(f"[STATUS] {msg}")
+        self.queue.put(f"[STATUS] {msg}")
         self.status.config(text=msg)
 
     def process_queue(self):
         try:
             while True:
-                m = self.q.get_nowait()
-                self.log_box.insert(tk.END, m + "\n")
-                self.log_box.see(tk.END)
+                m = self.queue.get_nowait()
+                self.logbox.insert(tk.END, m + "\n")
+                self.logbox.see(tk.END)
         except queue.Empty:
             pass
         self.root.after(100, self.process_queue)
@@ -71,90 +68,110 @@ class SetupGUI:
     # ---------- PYTHON ----------
     def ensure_python(self):
         if os.path.exists(PYTHON_EXE):
-            self.log("Portable Python already present.")
+            self.log("✔ Portable Python already installed")
             return
 
         self.set_status("Installing portable Python...")
         os.makedirs(PYTHON_DIR, exist_ok=True)
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as z:
-            urllib.request.urlretrieve(PYTHON_ZIP_URL, z.name)
-            zip_path = z.name
+        zip_path = tempfile.mktemp(".zip")
+        urllib.request.urlretrieve(PYTHON_ZIP, zip_path)
 
-        with zipfile.ZipFile(zip_path) as zf:
-            zf.extractall(PYTHON_DIR)
+        with zipfile.ZipFile(zip_path) as z:
+            z.extractall(PYTHON_DIR)
 
         os.remove(zip_path)
 
         # Enable stdlib
-        pth = os.path.join(PYTHON_DIR, "python312._pth")
-        with open(pth, "a") as f:
+        with open(os.path.join(PYTHON_DIR, "python312._pth"), "a") as f:
             f.write("\nimport site\n")
 
         # Install pip
-        with tempfile.NamedTemporaryFile(delete=False) as gp:
-            urllib.request.urlretrieve(GET_PIP_URL, gp.name)
-            subprocess.run([PYTHON_EXE, gp.name], check=True)
+        getpip = tempfile.mktemp(".py")
+        urllib.request.urlretrieve(GET_PIP, getpip)
+        subprocess.run([PYTHON_EXE, getpip], check=True)
+        os.remove(getpip)
 
-        self.log("Portable Python + pip installed.")
+        self.log("✔ Python installed")
 
     # ---------- NODE ----------
     def ensure_node(self):
-        node_exe = os.path.join(NODE_DIR, "node.exe")
-        if os.path.exists(node_exe):
-            self.log("Node.js already present.")
+        if os.path.exists(os.path.join(NODE_DIR, "node.exe")):
+            self.log("✔ Node.js already installed")
             return
 
         self.set_status("Installing Node.js...")
-        os.makedirs(NODE_DIR, exist_ok=True)
+        os.makedirs(TOOLS_DIR, exist_ok=True)
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as z:
-            urllib.request.urlretrieve(NODE_ZIP_URL, z.name)
-            zip_path = z.name
+        zip_path = tempfile.mktemp(".zip")
+        urllib.request.urlretrieve(NODE_ZIP, zip_path)
 
-        with zipfile.ZipFile(zip_path) as zf:
-            zf.extractall(TOOLS_DIR)
+        with zipfile.ZipFile(zip_path) as z:
+            z.extractall(TOOLS_DIR)
 
         os.remove(zip_path)
 
         extracted = next(d for d in os.listdir(TOOLS_DIR) if d.startswith("node-v"))
         shutil.move(os.path.join(TOOLS_DIR, extracted), NODE_DIR)
 
-        self.log("Node.js installed.")
+        self.log("✔ Node.js installed")
+
+    # ---------- ENV VARS ----------
+    def set_env_vars(self):
+        self.set_status("Setting environment variables...")
+        subprocess.run(["setx", "CODEX_HOME", CODEX_DIR], shell=True)
+
+        current_path = os.environ.get("PATH", "")
+        if NODE_DIR not in current_path:
+            subprocess.run(["setx", "PATH", f"{NODE_DIR};{current_path}"], shell=True)
+
+        self.log("✔ Environment variables set (user-level)")
 
     # ---------- CODEX ----------
     def ensure_codex(self):
-        npm = os.path.join(NODE_DIR, "npm.cmd")
         env = os.environ.copy()
         env["PATH"] = NODE_DIR + ";" + env["PATH"]
+        npm = os.path.join(NODE_DIR, "npm.cmd")
 
         subprocess.run([npm, "config", "set", "prefix", NODE_DIR], env=env)
         subprocess.run([npm, "install", "-g", "@openai/codex"], env=env)
 
-        self.log("Codex installed.")
+        self.log("✔ Codex installed")
 
     # ---------- MAIN ----------
     def run(self):
         self.progress.start()
-        os.makedirs(TOOLS_DIR, exist_ok=True)
+
         os.makedirs(CODEX_DIR, exist_ok=True)
 
         self.ensure_python()
         self.ensure_node()
         self.ensure_codex()
+        self.set_env_vars()
 
         if not os.path.exists(CONFIG_PATH):
             open(CONFIG_PATH, "w").close()
             subprocess.Popen(["notepad.exe", CONFIG_PATH])
 
         self.progress.stop()
-        self.set_status("Setup complete!")
-        self.log("✅ Codex environment ready")
-        self.log("Open PowerShell and run:")
-        self.log(f'$env:PATH="{NODE_DIR};$env:PATH"')
-        self.log("codex \"your prompt\"")
+        self.set_status("Setup complete 🎉")
 
-# ------------------ ENTRY ------------------
+        self.log("\n✅ You can now run from ANY new terminal:")
+        self.log("   codex \"your prompt\"")
+
+        btn = tk.Button(self.root, text="Open PowerShell (Codex Ready)",
+                        command=self.open_powershell)
+        btn.pack(pady=10)
+
+    def open_powershell(self):
+        subprocess.Popen([
+            "powershell.exe",
+            "-NoExit",
+            "-Command",
+            'Write-Host "Codex ready! Type: codex \\"your prompt\\""'
+        ])
+
+# ---------- ENTRY ----------
 if __name__ == "__main__":
     root = tk.Tk()
     SetupGUI(root)
