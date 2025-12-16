@@ -67,7 +67,7 @@ NODE_ZIP_URL = "https://nodejs.org/dist/v24.12.0/node-v24.12.0-win-x64.zip"
 CREATE_NO_WINDOW = 0x08000000
 
 # =========================================================
-# SETUP GUI (FIXED)
+# SETUP GUI (SAFE)
 # =========================================================
 class SetupGUI:
     def __init__(self, root):
@@ -149,28 +149,14 @@ class SetupGUI:
         npm = os.path.join(NODE_DIR, "npm.cmd")
         env = {"PATH": NODE_DIR}
 
-        subprocess.run(
-            [npm, "config", "set", "prefix", NPM_GLOBAL],
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
+        subprocess.run([npm, "config", "set", "prefix", NPM_GLOBAL], env=env)
 
-        for attempt in (1, 2):
-            try:
-                subprocess.run(
-                    [npm, "install", "-g", "@openai/codex"],
-                    env=env,
-                    check=True
-                )
-                self.log("✔ Codex installed")
-                break
-            except subprocess.CalledProcessError:
-                if attempt == 1:
-                    self.log("⚠ npm busy, retrying...")
-                    time.sleep(2)
-                else:
-                    self.log("❌ Codex install failed")
+        subprocess.run(
+            [npm, "install", "-g", "@openai/codex"],
+            env=env,
+            check=True
+        )
+        self.log("✔ Codex installed")
 
     def ensure_config(self):
         if not os.path.exists(CONFIG_PATH):
@@ -185,9 +171,8 @@ class SetupGUI:
         self.ensure_config()
         self.progress.stop()
         self.log("✅ Setup complete")
-        self.root.after(500, self.launch_chat)
+        self.root.after(800, self.launch_chat)
 
-    # ---------- CLEAN SHUTDOWN ----------
     def launch_chat(self):
         self.running = False
         if self.after_id:
@@ -199,7 +184,7 @@ class SetupGUI:
         root.mainloop()
 
 # =========================================================
-# CODEX CHAT
+# CODEX CHAT (RESPONSE SHOWN)
 # =========================================================
 class CodexChat:
     def __init__(self, root):
@@ -224,6 +209,10 @@ class CodexChat:
         self.console.insert(tk.END, f"\n👤 You:\n{prompt}\n\n")
         threading.Thread(target=self.run_codex, args=(prompt,), daemon=True).start()
 
+    def append_text(self, text):
+        self.console.insert(tk.END, text)
+        self.console.see(tk.END)
+
     def run_codex(self, prompt):
         out_file = os.path.join(tempfile.gettempdir(), "codex_out.txt")
         escaped = prompt.replace('"', '`"')
@@ -237,9 +226,13 @@ class CodexChat:
 
         if os.path.exists(out_file):
             with open(out_file, encoding="utf-8") as f:
-                self.console.insert(tk.END, f.read())
-                self.console.see(tk.END)
+                response = f.read()
             os.remove(out_file)
+        else:
+            response = "\n⚠ No response from Codex\n"
+
+        # 🔒 UI UPDATE MUST BE ON MAIN THREAD
+        self.root.after(0, self.append_text, response)
 
 # =========================================================
 # ENTRY
