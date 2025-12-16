@@ -5,7 +5,7 @@ import shutil
 import subprocess
 import tempfile
 import tkinter as tk
-from tkinter import scrolledtext, ttk, messagebox
+from tkinter import scrolledtext, ttk
 import threading
 import queue
 
@@ -51,6 +51,20 @@ PYTHON_ZIP_URL = "https://www.python.org/ftp/python/3.12.2/python-3.12.2-embed-a
 GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
 NODE_ZIP_URL = "https://nodejs.org/dist/v24.12.0/node-v24.12.0-win-x64.zip"
 
+# ---------------- RESOLVE CODEX CMD ----------------
+def resolve_codex_cmd():
+    candidates = [
+        os.path.join(NODE_DIR, "codex.cmd"),
+        os.path.join(NODE_DIR, "bin", "codex.cmd"),
+        os.path.join(NODE_DIR, "node_modules", ".bin", "codex.cmd"),
+    ]
+
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+
+    raise FileNotFoundError("codex.cmd not found after installation")
+
 # ---------------- GUI ----------------
 class SetupGUI:
     def __init__(self, root):
@@ -61,7 +75,7 @@ class SetupGUI:
         self.log_box = scrolledtext.ScrolledText(root, wrap=tk.WORD)
         self.log_box.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        self.progress = ttk.Progressbar(root, mode="indeterminate")
+        self.progress = ttk.Progressbar(root нави="indeterminate")
         self.progress.pack(fill=tk.X, padx=10)
 
         self.status = tk.Label(root, text="Initializing...")
@@ -72,7 +86,6 @@ class SetupGUI:
 
         threading.Thread(target=self.run, daemon=True).start()
 
-    # ---------- UI HELPERS ----------
     def log(self, msg):
         self.q.put(msg)
 
@@ -136,19 +149,6 @@ class SetupGUI:
 
         self.log("✔ Node.js installed")
 
-    # ---------- PATH ----------
-    def set_user_path(self):
-        self.set_status("Updating PATH...")
-        current = os.environ.get("PATH", "")
-        if NODE_DIR.lower() not in current.lower():
-            subprocess.run(
-                ["setx", "PATH", current + ";" + NODE_DIR],
-                shell=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-        self.log("✔ PATH updated")
-
     # ---------- CODEX ----------
     def ensure_codex(self):
         self.set_status("Installing Codex...")
@@ -157,8 +157,8 @@ class SetupGUI:
         env = os.environ.copy()
         env["PATH"] = NODE_DIR + ";" + env["PATH"]
 
-        subprocess.run([npm, "config", "set", "prefix", NODE_DIR], env=env)
-        subprocess.run([npm, "install", "-g", "@openai/codex"], env=env)
+        subprocess.run([npm, "config", "set", "prefix", NODE_DIR], env=env, check=True)
+        subprocess.run([npm, "install", "-g", "@openai/codex"], env=env, check=True)
 
         self.log("✔ Codex installed")
 
@@ -179,7 +179,6 @@ class SetupGUI:
 
         self.ensure_python()
         self.ensure_node()
-        self.set_user_path()
         self.ensure_codex()
         self.ensure_config()
 
@@ -188,21 +187,21 @@ class SetupGUI:
 
         self.log("\nℹ If config.toml is empty, update it from https://hub.ai.com\n")
 
-        btn = tk.Button(
+        tk.Button(
             self.root,
             text="Open Codex Chat",
             font=("Segoe UI", 11, "bold"),
             command=self.open_chat
-        )
-        btn.pack(pady=10)
+        ).pack(pady=10)
 
-    # ---------- CODEX CHAT ----------
     def open_chat(self):
         ChatWindow(self.root)
 
 # ---------------- CHAT WINDOW ----------------
 class ChatWindow:
     def __init__(self, parent):
+        self.codex_cmd = resolve_codex_cmd()
+
         self.win = tk.Toplevel(parent)
         self.win.title("Codex Interactive Chat")
         self.win.geometry("800x550")
@@ -217,35 +216,26 @@ class ChatWindow:
         self.prompt.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         self.prompt.focus()
 
-        tk.Button(
-            frame,
-            text="Ask Codex",
-            command=self.run_codex
-        ).pack(side=tk.RIGHT)
+        tk.Button(frame, text="Ask Codex", command=self.run_codex).pack(side=tk.RIGHT)
 
     def run_codex(self):
         query = self.prompt.get().strip()
         if not query:
             return
 
-        self.output.insert(tk.END, f"\n🧑 You: {query}\n")
-        self.output.insert(tk.END, "🤖 Codex:\n")
+        self.output.insert(tk.END, f"\n🧑 You: {query}\n🤖 Codex:\n")
         self.output.see(tk.END)
         self.prompt.delete(0, tk.END)
 
         threading.Thread(target=self.exec_codex, args=(query,), daemon=True).start()
 
     def exec_codex(self, query):
-        env = os.environ.copy()
-        env["PATH"] = NODE_DIR + ";" + env["PATH"]
-
         try:
             proc = subprocess.Popen(
-                ["codex", query],
+                [self.codex_cmd, query],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True,
-                env=env
+                text=True
             )
 
             for line in proc.stdout:
