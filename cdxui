@@ -185,7 +185,7 @@ class SetupGUI:
         self.ensure_codex()
         self.ensure_config()
         self.progress.stop()
-        self.set_status("Setup complete!")
+        self.set_status("Setup complete! Using ~/.codex for Codex home.")
 
         tk.Button(
             self.root,
@@ -230,7 +230,7 @@ class ChatWindow:
         self.context_label = tk.Label(self.win, text="Context: 100%", fg="green")
         self.context_label.pack(pady=(5, 0))
 
-        # Spawn PowerShell with Codex
+        # Spawn PowerShell with Codex (NEW: Set cwd to CODEX_DIR for consistency with .codex home)
         self.pty = winpty.PtyProcess.spawn(
             [
                 "powershell.exe",
@@ -239,6 +239,7 @@ class ChatWindow:
                 "-Command",
                 "codex"
             ],
+            cwd=CODEX_DIR,  # Ensures working dir is ~/.codex
             env={
                 **os.environ,
                 "CODEX_HOME": CODEX_DIR,
@@ -249,6 +250,7 @@ class ChatWindow:
         self.current_context = 100
         self.output_buffer = ""  # Accumulate for better parsing
         self.auto_compact_threshold = 20  # Auto-compact if below 20%
+        self.critical_restart_threshold = 5  # NEW: Restart session if critically low
 
         threading.Thread(target=self.read_output, daemon=True).start()
 
@@ -304,8 +306,14 @@ class ChatWindow:
                             self._compacting = True
                             self.insert_output(f"\n[Auto] Context low ({percentage}%) - Sending /compact...\n")
                             self.send_command('/compact')
-                            # Reset flag after a delay (simulated here; in real, could use threading.Timer)
+                            # Reset flag after a delay
                             threading.Timer(5.0, lambda: setattr(self, '_compacting', False)).start()
+                        # NEW: Critical low? Suggest/force /new after compact fails (debounced)
+                        elif percentage < self.critical_restart_threshold and not hasattr(self, '_restarting'):
+                            self._restarting = True
+                            self.insert_output(f"\n[Critical] Context critically low ({percentage}%) - Restarting session...\n")
+                            self.send_command('/new')
+                            threading.Timer(10.0, lambda: setattr(self, '_restarting', False)).start()
 
                     # Trim buffer if too long to prevent memory issues
                     if len(self.output_buffer) > 10000:
