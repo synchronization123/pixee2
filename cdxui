@@ -11,9 +11,35 @@ import queue
 import time
 
 # =========================================================
-# USER HOME
+# USER HOME RESOLUTION
 # =========================================================
-USER_HOME = os.getenv("USERPROFILE")
+def resolve_user_home():
+    username = os.getenv("USERNAME")
+    candidates = []
+
+    if username:
+        candidates.append(fr"C:\Users\{username}")
+        if username.lower().endswith(".corp"):
+            candidates.append(fr"C:\Users\{username[:-5]}")
+
+    userprofile = os.getenv("USERPROFILE")
+    if userprofile:
+        candidates.append(userprofile)
+
+    for path in candidates:
+        try:
+            if path and os.path.isdir(path):
+                test = os.path.join(path, ".perm_test")
+                with open(test, "w") as f:
+                    f.write("test")
+                os.remove(test)
+                return path
+        except Exception:
+            pass
+
+    raise RuntimeError("Unable to determine writable user home")
+
+USER_HOME = resolve_user_home()
 
 # =========================================================
 # PATHS
@@ -41,7 +67,7 @@ NODE_ZIP_URL = "https://nodejs.org/dist/v24.12.0/node-v24.12.0-win-x64.zip"
 CREATE_NO_WINDOW = 0x08000000
 
 # =========================================================
-# SETUP GUI
+# SETUP GUI (FIXED)
 # =========================================================
 class SetupGUI:
     def __init__(self, root):
@@ -56,23 +82,32 @@ class SetupGUI:
         self.progress.pack(fill=tk.X, padx=10)
 
         self.q = queue.Queue()
-        self.root.after(100, self.process_queue)
+        self.running = True
+        self.after_id = None
 
+        self.schedule_queue()
         threading.Thread(target=self.run, daemon=True).start()
 
-    def log(self, msg):
-        self.q.put(msg)
+    # ---------- SAFE QUEUE LOOP ----------
+    def schedule_queue(self):
+        if not self.running:
+            return
+        self.process_queue()
+        self.after_id = self.root.after(100, self.schedule_queue)
 
     def process_queue(self):
         try:
             while True:
-                self.log_box.insert(tk.END, self.q.get_nowait() + "\n")
+                msg = self.q.get_nowait()
+                self.log_box.insert(tk.END, msg + "\n")
                 self.log_box.see(tk.END)
         except queue.Empty:
             pass
-        self.root.after(100, self.process_queue)
 
-    # ---------------- SETUP ----------------
+    def log(self, msg):
+        self.q.put(msg)
+
+    # ---------- SETUP STEPS ----------
     def ensure_python(self):
         if os.path.exists(os.path.join(PYTHON_DIR, "python.exe")):
             self.log("✔ Python already installed")
@@ -93,7 +128,7 @@ class SetupGUI:
 
     def ensure_node(self):
         if os.path.exists(os.path.join(NODE_DIR, "node.exe")):
-            self.log("✔ Node already installed")
+            self.log("✔ Node.js already installed")
             return
 
         self.log("Installing Node.js...")
@@ -112,9 +147,7 @@ class SetupGUI:
 
         self.log("Installing Codex (safe mode)...")
         npm = os.path.join(NODE_DIR, "npm.cmd")
-
-        env = os.environ.copy()
-        env["PATH"] = NODE_DIR
+        env = {"PATH": NODE_DIR}
 
         subprocess.run(
             [npm, "config", "set", "prefix", NPM_GLOBAL],
@@ -138,7 +171,6 @@ class SetupGUI:
                     time.sleep(2)
                 else:
                     self.log("❌ Codex install failed")
-                    return
 
     def ensure_config(self):
         if not os.path.exists(CONFIG_PATH):
@@ -153,10 +185,15 @@ class SetupGUI:
         self.ensure_config()
         self.progress.stop()
         self.log("✅ Setup complete")
-        self.root.after(800, self.launch_chat)
+        self.root.after(500, self.launch_chat)
 
+    # ---------- CLEAN SHUTDOWN ----------
     def launch_chat(self):
+        self.running = False
+        if self.after_id:
+            self.root.after_cancel(self.after_id)
         self.root.destroy()
+
         root = tk.Tk()
         CodexChat(root)
         root.mainloop()
@@ -176,12 +213,11 @@ class CodexChat:
         self.input = tk.Text(root, height=4)
         self.input.pack(fill=tk.X)
 
-        tk.Button(root, text="Send", command=self.send).pack(pady=5)
+        tk.Button(root, text="Send", command=self.send).pack(pady=6)
 
     def send(self):
         prompt = self.input.get("1.0", tk.END).strip()
         self.input.delete("1.0", tk.END)
-
         if not prompt:
             return
 
