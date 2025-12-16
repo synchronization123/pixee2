@@ -284,7 +284,12 @@ class ChatWindow:
                 data = self.pty.read(4096)
                 if not data:
                     break
-                cleaned = clean_terminal_output(data.decode('utf-8', errors='ignore'))
+                # Handle both str and bytes from winpty (pywinpty returns str)
+                if isinstance(data, bytes):
+                    text = data.decode('utf-8', errors='ignore')
+                else:
+                    text = data
+                cleaned = clean_terminal_output(text)
                 if cleaned.strip():
                     self.output_buffer += cleaned
                     self.insert_output(cleaned)
