@@ -9,14 +9,12 @@ from tkinter import scrolledtext, ttk
 import threading
 import queue
 import re
-import winpty  # REQUIRED for real terminal (ConPTY)
+import winpty
 
 # ---------------- ANSI CLEANING ----------------
-ANSI_ESCAPE_RE = re.compile(
-    r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])"
-)
+ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
-def clean_terminal_output(text: str) -> str:
+def clean_terminal_output(text):
     if not text:
         return ""
     text = ANSI_ESCAPE_RE.sub("", text)
@@ -33,83 +31,67 @@ def resolve_user_home():
         if not username.lower().endswith(".corp"):
             candidates.append(fr"C:\Users\{username}.corp")
 
-    userprofile = os.getenv("USERPROFILE")
-    if userprofile:
-        candidates.append(userprofile)
+    if os.getenv("USERPROFILE"):
+        candidates.append(os.getenv("USERPROFILE"))
 
     for path in dict.fromkeys(candidates):
         try:
             if path and os.path.isdir(path):
                 test = os.path.join(path, ".perm_test")
                 with open(test, "w") as f:
-                    f.write("test")
+                    f.write("x")
                 os.remove(test)
                 return path
         except Exception:
-            continue
+            pass
 
-    raise RuntimeError("Unable to determine writable user home directory")
+    raise RuntimeError("Cannot resolve writable user home")
 
 USER_HOME = resolve_user_home()
 
-# ---------------- FORCE CODEX HOME ----------------
+# ---------------- CODEX DIR ----------------
 CODEX_DIR = os.path.join(USER_HOME, ".codex")
 CONFIG_PATH = os.path.join(CODEX_DIR, "config.toml")
 
-# ---------------- TOOL PATHS ----------------
+# ---------------- TOOLS ----------------
 TOOLS_DIR = os.path.join(USER_HOME, "tools")
 NODE_DIR = os.path.join(TOOLS_DIR, "nodejs")
 
-# ---------------- RESOLVE CODEX CMD ----------------
+NODE_ZIP_URL = "https://nodejs.org/dist/v24.12.0/node-v24.12.0-win-x64.zip"
+
+# ---------------- POWERSHELL PATH ----------------
+POWERSHELL_EXE = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+
+# ---------------- RESOLVE CODEX ----------------
 def resolve_codex_cmd():
-    candidates = [
+    paths = [
         os.path.join(NODE_DIR, "codex.cmd"),
         os.path.join(NODE_DIR, "bin", "codex.cmd"),
         os.path.join(NODE_DIR, "node_modules", ".bin", "codex.cmd"),
     ]
-    for c in candidates:
-        if os.path.exists(c):
-            return c
+    for p in paths:
+        if os.path.exists(p):
+            return p
     raise FileNotFoundError("codex.cmd not found")
 
 # ---------------- SETUP GUI ----------------
 class SetupGUI:
     def __init__(self, root):
         self.root = root
-        root.title("Codex Setup & Chat (No Admin)")
+        root.title("Codex GUI (PowerShell-backed)")
         root.geometry("900x650")
 
-        self.log_box = scrolledtext.ScrolledText(root, wrap=tk.WORD)
+        self.log_box = scrolledtext.ScrolledText(root)
         self.log_box.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         self.progress = ttk.Progressbar(root, mode="indeterminate")
         self.progress.pack(fill=tk.X, padx=10)
 
-        self.status = tk.Label(root, text="Initializing...")
+        self.status = tk.Label(root, text="Ready")
         self.status.pack(pady=5)
 
-        self.q = queue.Queue()
-        self.root.after(100, self.process_queue)
-
-        threading.Thread(target=self.run, daemon=True).start()
-
-    def process_queue(self):
-        try:
-            while True:
-                m = self.q.get_nowait()
-                self.log_box.insert(tk.END, m + "\n")
-                self.log_box.see(tk.END)
-        except queue.Empty:
-            pass
-        self.root.after(100, self.process_queue)
-
-    def run(self):
-        self.progress.start()
-        self.progress.stop()
-        self.status.config(text="Setup complete!")
-
         tk.Button(
-            self.root,
+            root,
             text="Open Codex Chat",
             font=("Segoe UI", 11, "bold"),
             command=self.open_chat
@@ -118,11 +100,10 @@ class SetupGUI:
     def open_chat(self):
         ChatWindow(self.root)
 
-# ---------------- CHAT WINDOW (POWER-SHELL ACCURATE) ----------------
+# ---------------- CHAT WINDOW ----------------
 class ChatWindow:
     def __init__(self, parent):
         self.codex_cmd = resolve_codex_cmd()
-        self.codex_ready = False  # 🔑 IMPORTANT
 
         self.win = tk.Toplevel(parent)
         self.win.title("Codex Interactive Chat")
@@ -140,29 +121,35 @@ class ChatWindow:
 
         tk.Button(frame, text="Ask Codex", command=self.send_prompt).pack(side=tk.RIGHT)
 
+        # ---- SPAWN POWERSHELL WITH CODEX ----
         self.pty = winpty.PtyProcess.spawn(
-            [self.codex_cmd],
-            env={**os.environ, "CODEX_HOME": CODEX_DIR, "USERPROFILE": USER_HOME}
+            [
+                POWERSHELL_EXE,
+                "-NoLogo",
+                "-NoExit",
+                "-Command",
+                self.codex_cmd
+            ],
+            env={
+                **os.environ,
+                "CODEX_HOME": CODEX_DIR,
+                "USERPROFILE": USER_HOME,
+            }
         )
 
         threading.Thread(target=self.read_output, daemon=True).start()
 
     def send_prompt(self):
-        if not self.codex_ready:
-            self.output.insert(tk.END, "\n⏳ Codex is still initializing...\n")
-            self.output.see(tk.END)
+        text = self.prompt.get().strip()
+        if not text:
             return
 
-        query = self.prompt.get().strip()
-        if not query:
-            return
-
-        self.output.insert(tk.END, f"\n🧑 You: {query}\n")
+        self.output.insert(tk.END, f"\n🧑 You: {text}\n")
         self.output.see(tk.END)
         self.prompt.delete(0, tk.END)
 
-        # EXACT PowerShell behavior
-        self.pty.write(query + "\r\n\r\n")
+        # SINGLE ENTER — PowerShell handles submission correctly
+        self.pty.write(text + "\r\n")
 
     def read_output(self):
         try:
@@ -170,21 +157,19 @@ class ChatWindow:
                 data = self.pty.read(4096)
                 if not data:
                     break
-
                 cleaned = clean_terminal_output(data)
                 if cleaned.strip():
                     self.output.insert(tk.END, cleaned)
                     self.output.see(tk.END)
-
-                # 🔑 Detect Codex READY state
-                if "Tip:" in cleaned or "You can resume" in cleaned:
-                    self.codex_ready = True
-
         except Exception as e:
             self.output.insert(tk.END, f"\n❌ Error: {e}\n")
 
 # ---------------- ENTRY ----------------
 if __name__ == "__main__":
+    os.makedirs(CODEX_DIR, exist_ok=True)
+    if not os.path.exists(CONFIG_PATH):
+        open(CONFIG_PATH, "w").close()
+
     root = tk.Tk()
     SetupGUI(root)
     root.mainloop()
