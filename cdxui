@@ -236,7 +236,8 @@ class ChatWindow:
             proc = subprocess.Popen(
                 [
                     self.codex_cmd,
-                    "--non-interactive",
+                    "--non-interactive=true",
+                    "--",
                     query
                 ],
                 stdout=subprocess.PIPE,
