@@ -5,45 +5,24 @@ import shutil
 import subprocess
 import tempfile
 import tkinter as tk
-from tkinter import scrolledtext, ttk, messagebox
+from tkinter import scrolledtext, ttk
 import threading
 import queue
-import datetime
 import json
 
 # =========================================================
-# USER HOME RESOLUTION (ORIGINAL + SAFE)
+# USER HOME
 # =========================================================
 def resolve_user_home():
-    username = os.getenv("USERNAME")
-    candidates = []
-
-    if username:
-        candidates.append(fr"C:\Users\{username}")
-        if username.lower().endswith(".corp"):
-            candidates.append(fr"C:\Users\{username[:-5]}")
-
-    userprofile = os.getenv("USERPROFILE")
-    if userprofile:
-        candidates.append(userprofile)
-
-    for path in candidates:
-        try:
-            if path and os.path.isdir(path):
-                test = os.path.join(path, ".perm_test")
-                with open(test, "w") as f:
-                    f.write("test")
-                os.remove(test)
-                return path
-        except Exception:
-            pass
-
-    raise RuntimeError("Unable to determine writable user home")
+    for p in (os.getenv("USERPROFILE"),):
+        if p and os.path.isdir(p):
+            return p
+    raise RuntimeError("Cannot resolve user home")
 
 USER_HOME = resolve_user_home()
 
 # =========================================================
-# PATHS (ORIGINAL)
+# PATHS
 # =========================================================
 TOOLS_DIR = os.path.join(USER_HOME, "tools")
 PYTHON_DIR = os.path.join(TOOLS_DIR, "python")
@@ -53,50 +32,18 @@ CODEX_CMD = os.path.join(NODE_DIR, "codex.cmd")
 
 CODEX_DIR = os.path.join(USER_HOME, ".codex")
 CONFIG_PATH = os.path.join(CODEX_DIR, "config.toml")
-CHAT_DIR = os.path.join(CODEX_DIR, "chat_history")
-MEMORY_FILE = os.path.join(CODEX_DIR, "long_term_memory.json")
-TEMPLATE_DIR = os.path.join(CODEX_DIR, "prompt_templates")
 
-for d in (TOOLS_DIR, CODEX_DIR, CHAT_DIR, TEMPLATE_DIR):
+for d in (TOOLS_DIR, CODEX_DIR):
     os.makedirs(d, exist_ok=True)
 
-# =========================================================
-# DOWNLOAD URLS (ORIGINAL)
-# =========================================================
+CREATE_NO_WINDOW = 0x08000000
+
 PYTHON_ZIP_URL = "https://www.python.org/ftp/python/3.12.2/python-3.12.2-embed-amd64.zip"
 GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
 NODE_ZIP_URL = "https://nodejs.org/dist/v24.12.0/node-v24.12.0-win-x64.zip"
 
-CREATE_NO_WINDOW = 0x08000000
-
 # =========================================================
-# LONG TERM MEMORY
-# =========================================================
-def load_memory():
-    if os.path.exists(MEMORY_FILE):
-        with open(MEMORY_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return []
-
-def save_memory(mem):
-    with open(MEMORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(mem[-50:], f, indent=2)
-
-LONG_TERM_MEMORY = load_memory()
-
-# =========================================================
-# LOAD MD PROMPT TEMPLATES
-# =========================================================
-def load_templates():
-    templates = {"Free Chat": ""}
-    for f in os.listdir(TEMPLATE_DIR):
-        if f.endswith(".md"):
-            with open(os.path.join(TEMPLATE_DIR, f), encoding="utf-8") as fh:
-                templates[f[:-3]] = fh.read()
-    return templates
-
-# =========================================================
-# SETUP GUI (ORIGINAL + FIXED)
+# SETUP GUI
 # =========================================================
 class SetupGUI:
     def __init__(self, root):
@@ -112,7 +59,7 @@ class SetupGUI:
 
         self.q = queue.Queue()
         self.running = True
-        self.after_id = self.root.after(100, self.process_queue)
+        self.after_id = root.after(100, self.process_queue)
 
         threading.Thread(target=self.run, daemon=True).start()
 
@@ -129,13 +76,12 @@ class SetupGUI:
         if self.running:
             self.after_id = self.root.after(100, self.process_queue)
 
-    # ---------------- SETUP STEPS ----------------
+    # ---------------- SETUP ----------------
     def ensure_python(self):
         if os.path.exists(PYTHON_EXE):
-            self.log("✔ Python already installed")
+            self.log("✔ Python present")
             return
-        self.log("Installing portable Python...")
-        os.makedirs(PYTHON_DIR, exist_ok=True)
+        self.log("Installing Python...")
         z = tempfile.mktemp(".zip")
         urllib.request.urlretrieve(PYTHON_ZIP_URL, z)
         zipfile.ZipFile(z).extractall(PYTHON_DIR)
@@ -144,13 +90,13 @@ class SetupGUI:
             f.write("\nimport site\n")
         p = tempfile.mktemp(".py")
         urllib.request.urlretrieve(GET_PIP_URL, p)
-        subprocess.run([PYTHON_EXE, p], check=True)
+        subprocess.run([PYTHON_EXE, p])
 
     def ensure_node(self):
         if os.path.exists(os.path.join(NODE_DIR, "node.exe")):
-            self.log("✔ Node.js already installed")
+            self.log("✔ Node present")
             return
-        self.log("Installing Node.js...")
+        self.log("Installing Node...")
         z = tempfile.mktemp(".zip")
         urllib.request.urlretrieve(NODE_ZIP_URL, z)
         zipfile.ZipFile(z).extractall(TOOLS_DIR)
@@ -162,14 +108,13 @@ class SetupGUI:
         self.log("Installing Codex...")
         npm = os.path.join(NODE_DIR, "npm.cmd")
         env = os.environ.copy()
-        env["PATH"] = NODE_DIR + ";" + env.get("PATH", "")
+        env["PATH"] = NODE_DIR + ";" + env["PATH"]
         subprocess.run([npm, "config", "set", "prefix", NODE_DIR], env=env)
         subprocess.run([npm, "install", "-g", "@openai/codex"], env=env)
 
     def ensure_config(self):
         if not os.path.exists(CONFIG_PATH):
             open(CONFIG_PATH, "w").close()
-            self.log("✔ config.toml created")
 
     def run(self):
         self.progress.start()
@@ -179,37 +124,24 @@ class SetupGUI:
         self.ensure_config()
         self.progress.stop()
         self.log("✅ Setup complete")
-        self.root.after(800, self.launch_chat)
+        self.root.after(500, self.launch_chat)
 
     def launch_chat(self):
         self.running = False
-        if self.after_id:
-            self.root.after_cancel(self.after_id)
+        self.root.after_cancel(self.after_id)
         self.root.destroy()
         root = tk.Tk()
         CodexChat(root)
         root.mainloop()
 
 # =========================================================
-# CODEX CHAT UI
+# CODEX CHAT
 # =========================================================
 class CodexChat:
     def __init__(self, root):
         self.root = root
         root.title("Codex Desktop")
-        root.geometry("1100x750")
-
-        self.templates = load_templates()
-
-        bar = tk.Frame(root)
-        bar.pack(fill=tk.X)
-
-        self.template_var = tk.StringVar(value="Free Chat")
-        ttk.Combobox(
-            bar, values=list(self.templates.keys()),
-            textvariable=self.template_var,
-            state="readonly", width=30
-        ).pack(side=tk.RIGHT, padx=6)
+        root.geometry("1000x700")
 
         self.console = scrolledtext.ScrolledText(root, font=("Consolas", 11))
         self.console.pack(fill=tk.BOTH, expand=True)
@@ -217,37 +149,32 @@ class CodexChat:
         self.input = tk.Text(root, height=4)
         self.input.pack(fill=tk.X)
 
-        tk.Button(root, text="Send", command=self.send).pack(pady=6)
+        tk.Button(root, text="Send", command=self.send).pack(pady=5)
 
     def send(self):
-        text = self.input.get("1.0", tk.END).strip()
+        prompt = self.input.get("1.0", tk.END).strip()
         self.input.delete("1.0", tk.END)
-        if not text:
+        if not prompt:
             return
 
-        prompt = f"{self.templates[self.template_var.get()]}\n{text}".strip()
         self.console.insert(tk.END, f"\n👤 You:\n{prompt}\n\n")
-
-        threading.Thread(
-            target=self.run_codex,
-            args=(prompt,),
-            daemon=True
-        ).start()
+        threading.Thread(target=self.run_codex, args=(prompt,), daemon=True).start()
 
     def run_codex(self, prompt):
-        if not os.path.exists(CODEX_CMD):
-            self.console.insert(tk.END, f"\n❌ codex.cmd not found\n")
-            return
+        escaped = prompt.replace('"', '\\"')
 
-        env = os.environ.copy()
-        env["PATH"] = NODE_DIR + ";" + env.get("PATH", "")
+        cmd = [
+            "powershell.exe",
+            "-NoProfile",
+            "-Command",
+            f"& '{CODEX_CMD}' --non-interactive \"{escaped}\""
+        ]
 
         proc = subprocess.Popen(
-            [CODEX_CMD, prompt],
+            cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            env=env,
             creationflags=CREATE_NO_WINDOW
         )
 
@@ -257,7 +184,7 @@ class CodexChat:
 
         err = proc.stderr.read().strip()
         if err:
-            self.console.insert(tk.END, f"\n⚠ Error:\n{err}\n")
+            self.console.insert(tk.END, f"\n⚠ {err}\n")
 
 # =========================================================
 # ENTRY
