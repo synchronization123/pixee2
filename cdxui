@@ -13,19 +13,14 @@ import winpty  # REQUIRED for real terminal (ConPTY)
 
 # ---------------- ANSI CLEANING ----------------
 ANSI_ESCAPE_RE = re.compile(
-    r"""
-    \x1B
-    (?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])
-    """,
-    re.VERBOSE,
+    r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])"
 )
 
 def clean_terminal_output(text: str) -> str:
     if not text:
         return ""
     text = ANSI_ESCAPE_RE.sub("", text)
-    text = text.replace("\r\n", "\n")
-    text = text.replace("\r", "\n")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     return text
 
 # ---------------- USER HOME RESOLUTION ----------------
@@ -42,13 +37,9 @@ def resolve_user_home():
     if userprofile:
         candidates.append(userprofile)
 
-    seen = set()
-    for path in candidates:
-        if not path or path in seen:
-            continue
-        seen.add(path)
+    for path in dict.fromkeys(candidates):
         try:
-            if os.path.isdir(path):
+            if path and os.path.isdir(path):
                 test = os.path.join(path, ".perm_test")
                 with open(test, "w") as f:
                     f.write("test")
@@ -186,12 +177,9 @@ class SetupGUI:
     def ensure_config(self):
         self.set_status("Validating config.toml...")
         os.makedirs(CODEX_DIR, exist_ok=True)
-
-        if not os.path.exists(CONFIG_PATH) or os.path.getsize(CONFIG_PATH) == 0:
+        if not os.path.exists(CONFIG_PATH):
             open(CONFIG_PATH, "w").close()
             self.log(f"✔ config.toml ready at {CONFIG_PATH}")
-        else:
-            self.log("✔ config.toml already present")
 
     def run(self):
         self.progress.start()
@@ -212,7 +200,7 @@ class SetupGUI:
     def open_chat(self):
         ChatWindow(self.root)
 
-# ---------------- CHAT WINDOW (FIXED SUBMIT) ----------------
+# ---------------- CHAT WINDOW (FINAL STABLE) ----------------
 class ChatWindow:
     def __init__(self, parent):
         self.codex_cmd = resolve_codex_cmd()
@@ -231,20 +219,16 @@ class ChatWindow:
         self.prompt.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         self.prompt.focus()
 
-        tk.Button(frame, text="Ask Codex", command=self.run_codex).pack(side=tk.RIGHT)
+        tk.Button(frame, text="Ask Codex", command=self.send_prompt).pack(side=tk.RIGHT)
 
         self.pty = winpty.PtyProcess.spawn(
             [self.codex_cmd],
-            env={
-                **os.environ,
-                "CODEX_HOME": CODEX_DIR,
-                "USERPROFILE": USER_HOME,
-            }
+            env={**os.environ, "CODEX_HOME": CODEX_DIR, "USERPROFILE": USER_HOME}
         )
 
         threading.Thread(target=self.read_output, daemon=True).start()
 
-    def run_codex(self):
+    def send_prompt(self):
         query = self.prompt.get().strip()
         if not query:
             return
@@ -253,16 +237,16 @@ class ChatWindow:
         self.output.see(tk.END)
         self.prompt.delete(0, tk.END)
 
-        # SEND QUERY + ENTER + EOF (Ctrl+D)
-        self.pty.write(query + "\r\n\x04")
+        # DOUBLE ENTER submits compose safely (no EOF)
+        self.pty.write(query + "\r\n\r\n")
 
     def read_output(self):
         try:
             while True:
-                raw = self.pty.read(4096)
-                if not raw:
+                data = self.pty.read(4096)
+                if not data:
                     break
-                cleaned = clean_terminal_output(raw)
+                cleaned = clean_terminal_output(data)
                 if cleaned.strip():
                     self.output.insert(tk.END, cleaned)
                     self.output.see(tk.END)
