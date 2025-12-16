@@ -10,6 +10,7 @@ import threading
 import queue
 import re
 import winpty  # ConPTY support (required)
+import time  # For cooldowns
 
 # ---------------- ANSI CLEANING ----------------
 ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
@@ -230,7 +231,7 @@ class ChatWindow:
         self.context_label = tk.Label(self.win, text="Context: 100%", fg="green")
         self.context_label.pack(pady=(5, 0))
 
-        # Spawn PowerShell with Codex (NEW: Set cwd to CODEX_DIR for consistency with .codex home)
+        # Spawn PowerShell with Codex (Set cwd to CODEX_DIR for consistency with .codex home)
         self.pty = winpty.PtyProcess.spawn(
             [
                 "powershell.exe",
@@ -248,9 +249,11 @@ class ChatWindow:
         )
 
         self.current_context = 100
-        self.output_buffer = ""  # Accumulate for better parsing
+        self.output_buffer = ""  # Accumulate for better parsing (but search only new for latest %)
         self.auto_compact_threshold = 20  # Auto-compact if below 20%
-        self.critical_restart_threshold = 5  # NEW: Restart session if critically low
+        self.critical_restart_threshold = 5  # Restart session if critically low
+        self.last_auto_time = 0  # Cooldown for auto actions
+        self.cooldown = 30  # Seconds between auto-compacts
 
         threading.Thread(target=self.read_output, daemon=True).start()
 
@@ -261,9 +264,10 @@ class ChatWindow:
         self.output.config(state=tk.DISABLED)
 
     def update_context_status(self, percentage):
-        color = "red" if percentage < 20 else "orange" if percentage < 40 else "green"
-        self.context_label.config(text=f"Context: {percentage}%", fg=color)
-        self.current_context = percentage
+        if abs(percentage - self.current_context) > 1:  # Only update if significant change (avoids flicker)
+            color = "red" if percentage < 20 else "orange" if percentage < 40 else "green"
+            self.context_label.config(text=f"Context: {percentage}%", fg=color)
+            self.current_context = percentage
 
     def send_command(self, cmd):
         self.insert_output(f"\n[Command] {cmd}\n")
@@ -277,7 +281,7 @@ class ChatWindow:
         self.insert_output(f"\n🧑 You: {query}\n")
         self.prompt.delete(0, tk.END)
 
-        # Send query followed by enter (single for submit; double was for compose safety, but single suffices for standard prompts)
+        # Send query followed by enter
         self.pty.write(query + '\r\n')
 
     def read_output(self):
@@ -296,21 +300,29 @@ class ChatWindow:
                     self.output_buffer += cleaned
                     self.insert_output(cleaned)
 
-                    # Parse for context percentage in the latest output
-                    match = CONTEXT_RE.search(self.output_buffer)
+                    # FIXED: Parse for context percentage in NEW output only (latest)
+                    match = CONTEXT_RE.search(cleaned)
                     if match:
                         percentage = int(match.group(1))
                         self.update_context_status(percentage)
-                        # Auto-compact if low (with debounce to avoid spam)
-                        if percentage < self.auto_compact_threshold and not hasattr(self, '_compacting'):
+                        now = time.time()
+                        # Auto-compact if low, with cooldown and only if lower than current
+                        if (percentage < self.auto_compact_threshold and 
+                            percentage < self.current_context and 
+                            now - self.last_auto_time > self.cooldown and 
+                            not hasattr(self, '_compacting')):
                             self._compacting = True
+                            self.last_auto_time = now
                             self.insert_output(f"\n[Auto] Context low ({percentage}%) - Sending /compact...\n")
                             self.send_command('/compact')
                             # Reset flag after a delay
                             threading.Timer(5.0, lambda: setattr(self, '_compacting', False)).start()
-                        # NEW: Critical low? Suggest/force /new after compact fails (debounced)
-                        elif percentage < self.critical_restart_threshold and not hasattr(self, '_restarting'):
+                        # Critical low? Restart after compact cooldown
+                        elif (percentage < self.critical_restart_threshold and 
+                              now - self.last_auto_time > self.cooldown * 2 and  # Longer for restart
+                              not hasattr(self, '_restarting')):
                             self._restarting = True
+                            self.last_auto_time = now
                             self.insert_output(f"\n[Critical] Context critically low ({percentage}%) - Restarting session...\n")
                             self.send_command('/new')
                             threading.Timer(10.0, lambda: setattr(self, '_restarting', False)).start()
