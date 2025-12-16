@@ -23,9 +23,10 @@ def clean_terminal_output(text: str, filter_context: bool = True) -> str:
     text = ANSI_ESCAPE_RE.sub("", text)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     if filter_context:
+        # Filter out lines containing "% context left" to reduce spam in display
         lines = [line for line in text.split('\n') if not CONTEXT_RE.search(line)]
         text = '\n'.join(lines)
-    return text.strip() + '\n'
+    return text.strip() + '\n'  # Ensure trailing newline for clean insertion
 
 # ---------------- USER HOME RESOLUTION ----------------
 def resolve_user_home():
@@ -164,13 +165,32 @@ class SetupGUI:
         subprocess.run([npm, "config", "set", "prefix", NODE_DIR], env=env, check=True)
         subprocess.run([npm, "install", "-g", "@openai/codex"], env=env, check=True)
 
-        self.log("✔ Codex installed")
+        # Verify installation and log version
+        try:
+            version_result = subprocess.run([os.path.join(NODE_DIR, "node.exe"), "-e", "console.log(require('@openai/codex/package.json').version)"], 
+                                          capture_output=True, text=True, env=env)
+            if version_result.returncode == 0:
+                self.log(f"✔ Codex installed (v{version_result.stdout.strip()})")
+            else:
+                self.log("✔ Codex installed (version check failed)")
+        except Exception:
+            self.log("✔ Codex installed")
 
     def ensure_config(self):
-        # ❗ DO NOT TOUCH config.toml
-        # Only ensure directory exists
         os.makedirs(CODEX_DIR, exist_ok=True)
-        self.log("✔ config.toml left unchanged")
+        # FIXED: Use valid config.toml keys based on OpenAI docs (disable TUI animations/notifications; no direct context disable, so rely on filter)
+        config_content = """# Codex CLI Config - Reduced Output
+[features]
+hide_agent_reasoning = true
+model_reasoning_summary = "none"
+
+[tui]
+animations = false
+notifications = false
+"""
+        with open(CONFIG_PATH, "w") as f:
+            f.write(config_content)
+        self.log(f"✔ config.toml ready at {CONFIG_PATH} (reduced output)")
 
     def run(self):
         self.progress.start()
@@ -179,7 +199,7 @@ class SetupGUI:
         self.ensure_codex()
         self.ensure_config()
         self.progress.stop()
-        self.set_status("Setup complete! Using ~/.codex as-is.")
+        self.set_status("Setup complete! Using ~/.codex for Codex home.")
 
         tk.Button(
             self.root,
@@ -191,7 +211,7 @@ class SetupGUI:
     def open_chat(self):
         ChatWindow(self.root)
 
-# ---------------- CHAT WINDOW ----------------
+# ---------------- CHAT WINDOW (POWERSHELL HOST) ----------------
 class ChatWindow:
     def __init__(self, parent):
         self.win = tk.Toplevel(parent)
@@ -201,45 +221,186 @@ class ChatWindow:
         self.output = scrolledtext.ScrolledText(self.win, wrap=tk.WORD, state=tk.DISABLED)
         self.output.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        self.prompt = tk.Entry(self.win)
-        self.prompt.pack(fill=tk.X, padx=10, pady=5)
+        # Command buttons frame
+        button_frame = tk.Frame(self.win)
+        button_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        tk.Button(button_frame, text="Compact (/compact)", command=lambda: self.send_command('/compact')).pack(side=tk.LEFT, padx=(0, 5))
+        tk.Button(button_frame, text="Clear (/clear)", command=lambda: self.send_command('/clear')).pack(side=tk.LEFT, padx=5)
+        tk.Button(button_frame, text="New Session (/new)", command=lambda: self.send_command('/new')).pack(side=tk.LEFT, padx=5)
+
+        # Background mode toggle
+        self.bg_mode = tk.BooleanVar(value=False)
+        tk.Checkbutton(button_frame, text="Background PS Mode", variable=self.bg_mode, command=self.restart_pty).pack(side=tk.LEFT, padx=5)
+
+        # Input frame
+        input_frame = tk.Frame(self.win)
+        input_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        self.prompt = tk.Entry(input_frame)
+        self.prompt.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        self.prompt.focus()
         self.prompt.bind('<Return>', lambda e: self.send_prompt())
 
-        tk.Button(self.win, text="Ask Codex", command=self.send_prompt).pack(pady=5)
+        tk.Button(input_frame, text="Ask Codex", command=self.send_prompt).pack(side=tk.RIGHT)
+
+        # Context status label (updated to reflect filtering)
+        self.context_label = tk.Label(self.win, text="Context: Filtered (spam-free)", fg="gray")
+        self.context_label.pack(pady=(5, 0))
 
         self.pty = None
-        self.restart_pty()
+        self.current_context = 100
+        self.output_buffer = ""
+        self.auto_compact_threshold = 20
+        self.critical_restart_threshold = 5
+        self.last_auto_time = 0
+        self.cooldown = 30
+        self.read_thread = None  # Track thread for restart
+
+        self.restart_pty()  # Initial start
 
     def restart_pty(self):
+        if self.pty:
+            try:
+                self.pty.close()
+            except:
+                pass
+        if self.read_thread and self.read_thread.is_alive():
+            # Can't kill thread easily, but new one will take over
+            pass
+
         env = {
             **os.environ,
             "CODEX_HOME": CODEX_DIR,
             "USERPROFILE": USER_HOME,
         }
-        self.pty = winpty.PtyProcess.spawn(
-            ["powershell.exe", "-NoLogo", "-NoExit", "-Command", "codex"],
-            cwd=CODEX_DIR,
-            env=env
-        )
-        threading.Thread(target=self.read_output, daemon=True).start()
+        self.output.config(state=tk.NORMAL)
+        self.output.insert(tk.END, "\n[Restart] Reloading PTY session...\n")
+        self.output.see(tk.END)
+        self.output.config(state=tk.DISABLED)
 
-    def send_prompt(self):
-        text = self.prompt.get().strip()
-        if text:
-            self.prompt.delete(0, tk.END)
-            self.pty.write(text + "\r\n")
+        if self.bg_mode.get():
+            # Background mode: Start plain PS, then send "codex\n" after a beat
+            self.pty = winpty.PtyProcess.spawn(
+                ["powershell.exe", "-NoLogo", "-NoExit"],
+                cwd=CODEX_DIR,
+                env=env
+            )
+            threading.Timer(0.5, lambda: self.pty.write("codex\r\n")).start()
+            self.insert_output("[BG Mode] Started PowerShell and invoked 'codex'...\n")
+        else:
+            # Default: Direct "codex" invocation
+            self.pty = winpty.PtyProcess.spawn(
+                ["powershell.exe", "-NoLogo", "-NoExit", "-Command", "codex"],
+                cwd=CODEX_DIR,
+                env=env
+            )
+            self.insert_output("[Direct Mode] Launched Codex CLI...\n")
+
+        # Restart read thread
+        self.read_thread = threading.Thread(target=self.read_output, daemon=True)
+        self.read_thread.start()
+
+    def insert_output(self, text):
+        self.output.config(state=tk.NORMAL)
+        self.output.insert(tk.END, text)
+        self.output.see(tk.END)
+        self.output.config(state=tk.DISABLED)
+
+    def update_context_status(self, percentage):
+        if abs(percentage - self.current_context) > 1:
+            color = "red" if percentage < 20 else "orange" if percentage < 40 else "green"
+            self.context_label.config(text=f"Context: {percentage}%", fg=color)
+            self.current_context = percentage
+
+    def send_command(self, cmd):
+        if not self.pty:
+            messagebox.showwarning("Warning", "PTY not active. Restarting...")
+            self.restart_pty()
+            return
+        self.insert_output(f"\n[Command] {cmd}\n")
+        self.pty.write(cmd + '\r\n')
+
+    def send_prompt(self, event=None):
+        query = self.prompt.get().strip()
+        if not query:
+            return
+        if not self.pty:
+            messagebox.showwarning("Warning", "PTY not active. Restarting...")
+            self.restart_pty()
+            return
+
+        self.insert_output(f"\n🧑 You: {query}\n")
+        self.prompt.delete(0, tk.END)
+        self.pty.write(query + '\r\n')
 
     def read_output(self):
+        consecutive_errors = 0
+        max_consecutive = 3  # Restart after 3 consecutive aborts
         while True:
             try:
+                if not self.pty:
+                    time.sleep(0.1)
+                    continue
                 data = self.pty.read(4096)
-                if data:
-                    cleaned = clean_terminal_output(data)
-                    self.output.config(state=tk.NORMAL)
-                    self.output.insert(tk.END, cleaned)
-                    self.output.see(tk.END)
-                    self.output.config(state=tk.DISABLED)
-            except:
+                if not data:
+                    time.sleep(0.1)
+                    continue
+
+                consecutive_errors = 0  # Reset on successful read
+
+                # Handle both str and bytes from winpty
+                if isinstance(data, bytes):
+                    text = data.decode('utf-8', errors='ignore')
+                else:
+                    text = data
+
+                # Parse raw text first for context
+                match = CONTEXT_RE.search(text)
+                if match:
+                    percentage = int(match.group(1))
+                    self.update_context_status(percentage)
+                    now = time.time()
+                    if (percentage < self.auto_compact_threshold and 
+                        percentage < self.current_context and 
+                        now - self.last_auto_time > self.cooldown and 
+                        not hasattr(self, '_compacting')):
+                        self._compacting = True
+                        self.last_auto_time = now
+                        self.insert_output(f"\n[Auto] Context low ({percentage}%) - Sending /compact...\n")
+                        self.send_command('/compact')
+                        threading.Timer(5.0, lambda: setattr(self, '_compacting', False)).start()
+                    elif (percentage < self.critical_restart_threshold and 
+                          now - self.last_auto_time > self.cooldown * 2 and 
+                          not hasattr(self, '_restarting')):
+                        self._restarting = True
+                        self.last_auto_time = now
+                        self.insert_output(f"\n[Critical] Context critically low ({percentage}%) - Restarting session...\n")
+                        self.send_command('/new')
+                        threading.Timer(10.0, lambda: setattr(self, '_restarting', False)).start()
+
+                # Clean and filter for display
+                cleaned = clean_terminal_output(text, filter_context=True)
+                if cleaned.strip():
+                    self.output_buffer += cleaned
+                    self.insert_output(cleaned)
+                    if len(self.output_buffer) > 10000:
+                        self.output_buffer = self.output_buffer[-5000:]
+
+            except socket.error as e:
+                if e.errno == 10053:  # WSAECONNABORTED
+                    consecutive_errors += 1
+                    self.insert_output(f"\n[Conn Abort #{consecutive_errors}] WinError 10053 detected - retrying...\n")
+                    if consecutive_errors >= max_consecutive:
+                        self.insert_output(f"\n[Restart] Too many aborts - auto-restarting PTY...\n")
+                        self.win.after(0, self.restart_pty)  # Schedule on main thread
+                        break
+                    time.sleep(1)  # Brief pause before retry
+                else:
+                    self.insert_output(f"\n❌ Socket error: {e}\n")
+                    break
+            except Exception as e:
+                self.insert_output(f"\n❌ Error reading output: {e}\n")
                 break
 
 # ---------------- ENTRY ----------------
