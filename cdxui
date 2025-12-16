@@ -41,15 +41,10 @@ USER_HOME = resolve_user_home()
 # ---------------- PATHS ----------------
 TOOLS_DIR = os.path.join(USER_HOME, "tools")
 PYTHON_DIR = os.path.join(TOOLS_DIR, "python")
-PYTHON_EXE = os.path.join(PYTHON_DIR, "python.exe")
 NODE_DIR = os.path.join(TOOLS_DIR, "nodejs")
 
 CODEX_DIR = os.path.join(USER_HOME, ".codex")
 CONFIG_PATH = os.path.join(CODEX_DIR, "config.toml")
-
-PYTHON_ZIP_URL = "https://www.python.org/ftp/python/3.12.2/python-3.12.2-embed-amd64.zip"
-GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
-NODE_ZIP_URL = "https://nodejs.org/dist/v24.12.0/node-v24.12.0-win-x64.zip"
 
 # ---------------- RESOLVE CODEX CMD ----------------
 def resolve_codex_cmd():
@@ -67,7 +62,7 @@ def resolve_codex_cmd():
 class SetupGUI:
     def __init__(self, root):
         self.root = root
-        root.title("Codex Setup & Chat (No Admin)")
+        root.title("Codex GUI (No Terminal)")
         root.geometry("900x650")
 
         self.log_box = scrolledtext.ScrolledText(root, wrap=tk.WORD)
@@ -76,117 +71,11 @@ class SetupGUI:
         self.progress = ttk.Progressbar(root, mode="indeterminate")
         self.progress.pack(fill=tk.X, padx=10)
 
-        self.status = tk.Label(root, text="Initializing...")
+        self.status = tk.Label(root, text="Ready")
         self.status.pack(pady=5)
 
-        self.q = queue.Queue()
-        self.root.after(100, self.process_queue)
-
-        threading.Thread(target=self.run, daemon=True).start()
-
-    def log(self, msg):
-        self.q.put(msg)
-
-    def set_status(self, msg):
-        self.q.put(f"[STATUS] {msg}")
-        self.status.config(text=msg)
-
-    def process_queue(self):
-        try:
-            while True:
-                m = self.q.get_nowait()
-                self.log_box.insert(tk.END, m + "\n")
-                self.log_box.see(tk.END)
-        except queue.Empty:
-            pass
-        self.root.after(100, self.process_queue)
-
-    # ---------- PYTHON ----------
-    def ensure_python(self):
-        if os.path.exists(PYTHON_EXE):
-            self.log("✔ Python already installed")
-            return
-
-        self.set_status("Installing Python...")
-        os.makedirs(PYTHON_DIR, exist_ok=True)
-
-        zip_path = tempfile.mktemp(".zip")
-        urllib.request.urlretrieve(PYTHON_ZIP_URL, zip_path)
-
-        with zipfile.ZipFile(zip_path) as z:
-            z.extractall(PYTHON_DIR)
-        os.remove(zip_path)
-
-        with open(os.path.join(PYTHON_DIR, "python312._pth"), "a") as f:
-            f.write("\nimport site\n")
-
-        get_pip = tempfile.mktemp(".py")
-        urllib.request.urlretrieve(GET_PIP_URL, get_pip)
-        subprocess.run([PYTHON_EXE, get_pip], check=True)
-
-        self.log("✔ Python + pip installed")
-
-    # ---------- NODE ----------
-    def ensure_node(self):
-        if os.path.exists(os.path.join(NODE_DIR, "node.exe")):
-            self.log("✔ Node.js already installed")
-            return
-
-        self.set_status("Installing Node.js...")
-        os.makedirs(TOOLS_DIR, exist_ok=True)
-
-        zip_path = tempfile.mktemp(".zip")
-        urllib.request.urlretrieve(NODE_ZIP_URL, zip_path)
-
-        with zipfile.ZipFile(zip_path) as z:
-            z.extractall(TOOLS_DIR)
-        os.remove(zip_path)
-
-        extracted = next(d for d in os.listdir(TOOLS_DIR) if d.startswith("node-v"))
-        shutil.move(os.path.join(TOOLS_DIR, extracted), NODE_DIR)
-
-        self.log("✔ Node.js installed")
-
-    # ---------- CODEX ----------
-    def ensure_codex(self):
-        self.set_status("Installing Codex...")
-        npm = os.path.join(NODE_DIR, "npm.cmd")
-
-        env = os.environ.copy()
-        env["PATH"] = NODE_DIR + ";" + env["PATH"]
-
-        subprocess.run([npm, "config", "set", "prefix", NODE_DIR], env=env, check=True)
-        subprocess.run([npm, "install", "-g", "@openai/codex"], env=env, check=True)
-
-        self.log("✔ Codex installed")
-
-    # ---------- CONFIG ----------
-    def ensure_config(self):
-        self.set_status("Checking config.toml...")
-        os.makedirs(CODEX_DIR, exist_ok=True)
-
-        if not os.path.exists(CONFIG_PATH) or os.path.getsize(CONFIG_PATH) == 0:
-            open(CONFIG_PATH, "w").close()
-            self.log("✔ config.toml created (empty)")
-        else:
-            self.log("✔ config.toml exists")
-
-    # ---------- MAIN ----------
-    def run(self):
-        self.progress.start()
-
-        self.ensure_python()
-        self.ensure_node()
-        self.ensure_codex()
-        self.ensure_config()
-
-        self.progress.stop()
-        self.set_status("Setup complete!")
-
-        self.log("\nℹ If config.toml is empty, update it from https://hub.ai.com\n")
-
         tk.Button(
-            self.root,
+            root,
             text="Open Codex Chat",
             font=("Segoe UI", 11, "bold"),
             command=self.open_chat
@@ -201,7 +90,7 @@ class ChatWindow:
         self.codex_cmd = resolve_codex_cmd()
 
         self.win = tk.Toplevel(parent)
-        self.win.title("Codex Interactive Chat")
+        self.win.title("Codex Interactive GUI")
         self.win.geometry("800x550")
 
         self.output = scrolledtext.ScrolledText(self.win, wrap=tk.WORD)
@@ -225,19 +114,30 @@ class ChatWindow:
         self.output.see(tk.END)
         self.prompt.delete(0, tk.END)
 
-        threading.Thread(target=self.exec_codex, args=(query,), daemon=True).start()
+        threading.Thread(
+            target=self.exec_codex,
+            args=(query,),
+            daemon=True
+        ).start()
 
     def exec_codex(self, query):
+        env = os.environ.copy()
+        env["CODEX_NON_INTERACTIVE"] = "1"
+        env["PATH"] = NODE_DIR + ";" + env.get("PATH", "")
+
         try:
             proc = subprocess.Popen(
                 [self.codex_cmd, query],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True
+                text=True,
+                env=env
             )
+
             for line in proc.stdout:
                 self.output.insert(tk.END, line)
                 self.output.see(tk.END)
+
         except Exception as e:
             self.output.insert(tk.END, f"\n❌ Error: {e}\n")
 
