@@ -4,42 +4,57 @@ import tkinter as tk
 from tkinter import scrolledtext, ttk
 import threading
 import queue
+import re
 
 # ---------------- USER HOME RESOLUTION ----------------
 def resolve_user_home():
     username = os.getenv("USERNAME")
+    candidates = []
+
     if username:
-        base = fr"C:\Users\{username}"
-        if os.path.isdir(base):
-            return base
-        corp = fr"C:\Users\{username}.corp"
-        if os.path.isdir(corp):
-            return corp
-    return os.getenv("USERPROFILE")
+        candidates.append(fr"C:\Users\{username}")
+        if not username.lower().endswith(".corp"):
+            candidates.append(fr"C:\Users\{username}.corp")
+
+    userprofile = os.getenv("USERPROFILE")
+    if userprofile:
+        candidates.append(userprofile)
+
+    for path in dict.fromkeys(candidates):
+        if path and os.path.isdir(path):
+            return path
+
+    raise RuntimeError("Unable to determine user home")
 
 USER_HOME = resolve_user_home()
 
 # ---------------- PATHS ----------------
-CODEX_DIR = os.path.join(USER_HOME, ".codex")
 NODE_DIR = os.path.join(USER_HOME, "tools", "nodejs")
+CODEX_DIR = os.path.join(USER_HOME, ".codex")
 
 def resolve_codex_cmd():
-    paths = [
+    candidates = [
         os.path.join(NODE_DIR, "codex.cmd"),
+        os.path.join(NODE_DIR, "bin", "codex.cmd"),
         os.path.join(NODE_DIR, "node_modules", ".bin", "codex.cmd"),
     ]
-    for p in paths:
-        if os.path.exists(p):
-            return p
+    for c in candidates:
+        if os.path.exists(c):
+            return c
     raise FileNotFoundError("codex.cmd not found")
 
 CODEX_CMD = resolve_codex_cmd()
 
+# ---------------- ANSI CLEAN ----------------
+ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+def clean(text):
+    return ANSI_ESCAPE.sub("", text).replace("\r\n", "\n").replace("\r", "\n")
+
 # ---------------- GUI ----------------
 class CodexGUI:
     def __init__(self, root):
-        self.root = root
-        root.title("Codex GUI (Stable Mode)")
+        root.title("Codex GUI (Stable)")
         root.geometry("900x600")
 
         self.output = scrolledtext.ScrolledText(root, wrap=tk.WORD)
@@ -48,9 +63,9 @@ class CodexGUI:
         frame = tk.Frame(root)
         frame.pack(fill=tk.X, padx=10, pady=5)
 
-        self.entry = tk.Entry(frame)
-        self.entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
-        self.entry.focus()
+        self.prompt = tk.Entry(frame)
+        self.prompt.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        self.prompt.focus()
 
         tk.Button(frame, text="Ask Codex", command=self.ask).pack(side=tk.RIGHT)
 
@@ -65,39 +80,33 @@ class CodexGUI:
                 self.output.see(tk.END)
         except queue.Empty:
             pass
-        self.root.after(100, self.process_queue)
+        self.output.after(100, self.process_queue)
 
     def ask(self):
-        prompt = self.entry.get().strip()
-        if not prompt:
+        query = self.prompt.get().strip()
+        if not query:
             return
 
-        self.entry.delete(0, tk.END)
-        self.output.insert(tk.END, f"\n🧑 You:\n{prompt}\n\n🤖 Codex:\n")
-        self.output.see(tk.END)
+        self.output.insert(tk.END, f"\n🧑 You: {query}\n🤖 Codex:\n")
+        self.prompt.delete(0, tk.END)
 
-        threading.Thread(target=self.run_codex, args=(prompt,), daemon=True).start()
+        threading.Thread(target=self.run_codex, args=(query,), daemon=True).start()
 
-    def run_codex(self, prompt):
+    def run_codex(self, query):
         try:
             env = os.environ.copy()
             env["CODEX_HOME"] = CODEX_DIR
             env["USERPROFILE"] = USER_HOME
 
-            proc = subprocess.Popen(
-                [CODEX_CMD, "run"],
-                stdin=subprocess.PIPE,
+            proc = subprocess.run(
+                [CODEX_CMD, query],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 env=env
             )
 
-            proc.stdin.write(prompt)
-            proc.stdin.close()
-
-            for line in proc.stdout:
-                self.q.put(line)
+            self.q.put(clean(proc.stdout) + "\n")
 
         except Exception as e:
             self.q.put(f"\n❌ Error: {e}\n")
