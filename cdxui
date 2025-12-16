@@ -5,7 +5,7 @@ import shutil
 import subprocess
 import tempfile
 import tkinter as tk
-from tkinter import scrolledtext, ttk
+from tkinter import scrolledtext, ttk, messagebox
 import threading
 import queue
 
@@ -19,7 +19,6 @@ def resolve_user_home():
         if username.lower().endswith(".corp"):
             candidates.append(fr"C:\Users\{username[:-5]}")
 
-    # also try USERPROFILE as fallback
     userprofile = os.getenv("USERPROFILE")
     if userprofile:
         candidates.append(userprofile)
@@ -35,19 +34,16 @@ def resolve_user_home():
         except Exception:
             continue
 
-    raise RuntimeError("Unable to determine a writable user home directory")
+    raise RuntimeError("Unable to determine writable user home")
 
 USER_HOME = resolve_user_home()
 
-# ---------------- PATHS (FIXED) ----------------
+# ---------------- PATHS ----------------
 TOOLS_DIR = os.path.join(USER_HOME, "tools")
-
 PYTHON_DIR = os.path.join(TOOLS_DIR, "python")
 PYTHON_EXE = os.path.join(PYTHON_DIR, "python.exe")
-
 NODE_DIR = os.path.join(TOOLS_DIR, "nodejs")
 
-# 🔒 FIXED Codex location
 CODEX_DIR = os.path.join(USER_HOME, ".codex")
 CONFIG_PATH = os.path.join(CODEX_DIR, "config.toml")
 
@@ -59,8 +55,8 @@ NODE_ZIP_URL = "https://nodejs.org/dist/v24.12.0/node-v24.12.0-win-x64.zip"
 class SetupGUI:
     def __init__(self, root):
         self.root = root
-        root.title("Codex Setup (No Admin)")
-        root.geometry("820x620")
+        root.title("Codex Setup & Chat (No Admin)")
+        root.geometry("900x650")
 
         self.log_box = scrolledtext.ScrolledText(root, wrap=tk.WORD)
         self.log_box.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -76,7 +72,7 @@ class SetupGUI:
 
         threading.Thread(target=self.run, daemon=True).start()
 
-    # ---------- UI ----------
+    # ---------- UI HELPERS ----------
     def log(self, msg):
         self.q.put(msg)
 
@@ -97,10 +93,10 @@ class SetupGUI:
     # ---------- PYTHON ----------
     def ensure_python(self):
         if os.path.exists(PYTHON_EXE):
-            self.log("✔ Portable Python already installed")
+            self.log("✔ Python already installed")
             return
 
-        self.set_status("Installing portable Python...")
+        self.set_status("Installing Python...")
         os.makedirs(PYTHON_DIR, exist_ok=True)
 
         zip_path = tempfile.mktemp(".zip")
@@ -110,8 +106,7 @@ class SetupGUI:
             z.extractall(PYTHON_DIR)
         os.remove(zip_path)
 
-        pth = os.path.join(PYTHON_DIR, "python312._pth")
-        with open(pth, "a") as f:
+        with open(os.path.join(PYTHON_DIR, "python312._pth"), "a") as f:
             f.write("\nimport site\n")
 
         get_pip = tempfile.mktemp(".py")
@@ -141,11 +136,10 @@ class SetupGUI:
 
         self.log("✔ Node.js installed")
 
-    # ---------- USER PATH ----------
+    # ---------- PATH ----------
     def set_user_path(self):
-        self.set_status("Updating user PATH...")
+        self.set_status("Updating PATH...")
         current = os.environ.get("PATH", "")
-
         if NODE_DIR.lower() not in current.lower():
             subprocess.run(
                 ["setx", "PATH", current + ";" + NODE_DIR],
@@ -153,8 +147,7 @@ class SetupGUI:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
-
-        self.log("✔ User PATH updated")
+        self.log("✔ PATH updated")
 
     # ---------- CODEX ----------
     def ensure_codex(self):
@@ -169,45 +162,16 @@ class SetupGUI:
 
         self.log("✔ Codex installed")
 
-        subprocess.run(
-            [
-                "powershell.exe",
-                "-NoProfile",
-                "-Command",
-                "Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force"
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        self.log("✔ PowerShell ExecutionPolicy set")
-
     # ---------- CONFIG ----------
     def ensure_config(self):
-        self.set_status("Validating config.toml...")
-
+        self.set_status("Checking config.toml...")
         os.makedirs(CODEX_DIR, exist_ok=True)
 
-        recreate = False
-        if not os.path.exists(CONFIG_PATH):
-            recreate = True
-        elif os.path.getsize(CONFIG_PATH) == 0:
-            os.remove(CONFIG_PATH)
-            recreate = True
-
-        if recreate:
-            subprocess.run(
-                [
-                    "powershell.exe",
-                    "-NoProfile",
-                    "-Command",
-                    'New-Item -ItemType File -Path "$env:USERPROFILE\\.codex\\config.toml" -Force | Out-Null'
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
+        if not os.path.exists(CONFIG_PATH) or os.path.getsize(CONFIG_PATH) == 0:
+            open(CONFIG_PATH, "w").close()
             self.log("✔ config.toml created (empty)")
         else:
-            self.log("✔ config.toml already present")
+            self.log("✔ config.toml exists")
 
     # ---------- MAIN ----------
     def run(self):
@@ -222,27 +186,74 @@ class SetupGUI:
         self.progress.stop()
         self.set_status("Setup complete!")
 
-        self.log("")
-        self.log("ℹ IMPORTANT NOTE:")
-        self.log("If config.toml is empty, navigate to:")
-        self.log(CODEX_DIR)
-        self.log("and add the required data from:")
-        self.log("https://hub.ai.com")
-        self.log("")
-
-        self.log('✅ Usage: codex "your prompt"')
+        self.log("\nℹ If config.toml is empty, update it from https://hub.ai.com\n")
 
         btn = tk.Button(
             self.root,
-            text="Open PowerShell (Codex Ready)",
-            command=self.open_powershell
+            text="Open Codex Chat",
+            font=("Segoe UI", 11, "bold"),
+            command=self.open_chat
         )
         btn.pack(pady=10)
 
-    # ---------- POWERSHELL ----------
-    def open_powershell(self):
-        ps_cmd = f'$env:PATH="{NODE_DIR};$env:PATH"'
-        subprocess.Popen(["powershell.exe", "-NoExit", "-Command", ps_cmd])
+    # ---------- CODEX CHAT ----------
+    def open_chat(self):
+        ChatWindow(self.root)
+
+# ---------------- CHAT WINDOW ----------------
+class ChatWindow:
+    def __init__(self, parent):
+        self.win = tk.Toplevel(parent)
+        self.win.title("Codex Interactive Chat")
+        self.win.geometry("800x550")
+
+        self.output = scrolledtext.ScrolledText(self.win, wrap=tk.WORD)
+        self.output.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        frame = tk.Frame(self.win)
+        frame.pack(fill=tk.X, padx=10, pady=5)
+
+        self.prompt = tk.Entry(frame)
+        self.prompt.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        self.prompt.focus()
+
+        tk.Button(
+            frame,
+            text="Ask Codex",
+            command=self.run_codex
+        ).pack(side=tk.RIGHT)
+
+    def run_codex(self):
+        query = self.prompt.get().strip()
+        if not query:
+            return
+
+        self.output.insert(tk.END, f"\n🧑 You: {query}\n")
+        self.output.insert(tk.END, "🤖 Codex:\n")
+        self.output.see(tk.END)
+        self.prompt.delete(0, tk.END)
+
+        threading.Thread(target=self.exec_codex, args=(query,), daemon=True).start()
+
+    def exec_codex(self, query):
+        env = os.environ.copy()
+        env["PATH"] = NODE_DIR + ";" + env["PATH"]
+
+        try:
+            proc = subprocess.Popen(
+                ["codex", query],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                env=env
+            )
+
+            for line in proc.stdout:
+                self.output.insert(tk.END, line)
+                self.output.see(tk.END)
+
+        except Exception as e:
+            self.output.insert(tk.END, f"\n❌ Error: {e}\n")
 
 # ---------------- ENTRY ----------------
 if __name__ == "__main__":
