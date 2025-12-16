@@ -230,17 +230,16 @@ class ChatWindow:
     def exec_codex(self, query):
         try:
             proc = subprocess.Popen(
-                [
-                    self.codex_cmd,
-                    "exec",
-                    "-q",
-                    "--",
-                    query
-                ],
+                [self.codex_cmd, "-q"],
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True
             )
+
+            proc.stdin.write(query + "\n")
+            proc.stdin.flush()
+            proc.stdin.close()
 
             for line in proc.stdout:
                 self.output.insert(tk.END, line)
