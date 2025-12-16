@@ -1,0 +1,267 @@
+import os
+import zipfile
+import urllib.request
+import shutil
+import subprocess
+import tempfile
+import tkinter as tk
+from tkinter import scrolledtext, ttk, messagebox
+import threading
+import queue
+import datetime
+import json
+
+# =========================================================
+# USER HOME RESOLUTION (UNCHANGED)
+# =========================================================
+def resolve_user_home():
+    username = os.getenv("USERNAME")
+    candidates = []
+
+    if username:
+        candidates.append(fr"C:\Users\{username}")
+        if username.lower().endswith(".corp"):
+            candidates.append(fr"C:\Users\{username[:-5]}")
+
+    userprofile = os.getenv("USERPROFILE")
+    if userprofile:
+        candidates.append(userprofile)
+
+    for path in candidates:
+        try:
+            if path and os.path.isdir(path):
+                test = os.path.join(path, ".perm_test")
+                with open(test, "w") as f:
+                    f.write("test")
+                os.remove(test)
+                return path
+        except Exception:
+            continue
+
+    raise RuntimeError("Unable to determine writable home")
+
+USER_HOME = resolve_user_home()
+
+# =========================================================
+# PATHS
+# =========================================================
+TOOLS_DIR = os.path.join(USER_HOME, "tools")
+PYTHON_DIR = os.path.join(TOOLS_DIR, "python")
+PYTHON_EXE = os.path.join(PYTHON_DIR, "python.exe")
+NODE_DIR = os.path.join(TOOLS_DIR, "nodejs")
+
+CODEX_DIR = os.path.join(USER_HOME, ".codex")
+CONFIG_PATH = os.path.join(CODEX_DIR, "config.toml")
+CHAT_DIR = os.path.join(CODEX_DIR, "chat_history")
+MEMORY_FILE = os.path.join(CODEX_DIR, "long_term_memory.json")
+TEMPLATE_DIR = os.path.join(CODEX_DIR, "prompt_templates")
+
+for d in [CODEX_DIR, CHAT_DIR, TEMPLATE_DIR]:
+    os.makedirs(d, exist_ok=True)
+
+CREATE_NO_WINDOW = 0x08000000
+
+# =========================================================
+# DOWNLOAD URLS
+# =========================================================
+PYTHON_ZIP_URL = "https://www.python.org/ftp/python/3.12.2/python-3.12.2-embed-amd64.zip"
+GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
+NODE_ZIP_URL = "https://nodejs.org/dist/v24.12.0/node-v24.12.0-win-x64.zip"
+
+# =========================================================
+# LONG TERM MEMORY
+# =========================================================
+def load_memory():
+    if os.path.exists(MEMORY_FILE):
+        with open(MEMORY_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return []
+
+def save_memory(mem):
+    with open(MEMORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(mem[-50:], f, indent=2)
+
+LONG_TERM_MEMORY = load_memory()
+
+# =========================================================
+# LOAD MD PROMPT TEMPLATES
+# =========================================================
+def load_templates():
+    templates = {"Free Chat": ""}
+    for f in os.listdir(TEMPLATE_DIR):
+        if f.endswith(".md"):
+            with open(os.path.join(TEMPLATE_DIR, f), encoding="utf-8") as fh:
+                templates[f.replace(".md", "")] = fh.read()
+    return templates
+
+# =========================================================
+# SETUP GUI (YOUR ORIGINAL, SLIGHTLY WRAPPED)
+# =========================================================
+class SetupGUI:
+    def __init__(self, root):
+        self.root = root
+        root.title("Codex Setup (No Admin)")
+        root.geometry("820x620")
+
+        self.log_box = scrolledtext.ScrolledText(root)
+        self.log_box.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        self.progress = ttk.Progressbar(root, mode="indeterminate")
+        self.progress.pack(fill=tk.X, padx=10)
+
+        self.status = tk.Label(root, text="Initializing...")
+        self.status.pack(pady=5)
+
+        self.q = queue.Queue()
+        self.root.after(100, self.process_queue)
+
+        threading.Thread(target=self.run, daemon=True).start()
+
+    def log(self, msg):
+        self.q.put(msg)
+
+    def process_queue(self):
+        try:
+            while True:
+                self.log_box.insert(tk.END, self.q.get_nowait() + "\n")
+        except queue.Empty:
+            pass
+        self.root.after(100, self.process_queue)
+
+    # ---------------- SETUP STEPS ----------------
+    def ensure_python(self):
+        if os.path.exists(PYTHON_EXE):
+            self.log("✔ Python already present")
+            return
+        self.log("Installing Python...")
+        os.makedirs(PYTHON_DIR, exist_ok=True)
+        z = tempfile.mktemp(".zip")
+        urllib.request.urlretrieve(PYTHON_ZIP_URL, z)
+        zipfile.ZipFile(z).extractall(PYTHON_DIR)
+        os.remove(z)
+        with open(os.path.join(PYTHON_DIR, "python312._pth"), "a") as f:
+            f.write("\nimport site\n")
+        p = tempfile.mktemp(".py")
+        urllib.request.urlretrieve(GET_PIP_URL, p)
+        subprocess.run([PYTHON_EXE, p])
+
+    def ensure_node(self):
+        if os.path.exists(os.path.join(NODE_DIR, "node.exe")):
+            self.log("✔ Node already present")
+            return
+        self.log("Installing Node...")
+        z = tempfile.mktemp(".zip")
+        urllib.request.urlretrieve(NODE_ZIP_URL, z)
+        zipfile.ZipFile(z).extractall(TOOLS_DIR)
+        os.remove(z)
+        extracted = next(d for d in os.listdir(TOOLS_DIR) if d.startswith("node-v"))
+        shutil.move(os.path.join(TOOLS_DIR, extracted), NODE_DIR)
+
+    def ensure_codex(self):
+        self.log("Installing Codex...")
+        npm = os.path.join(NODE_DIR, "npm.cmd")
+        env = os.environ.copy()
+        env["PATH"] = NODE_DIR + ";" + env["PATH"]
+        subprocess.run([npm, "install", "-g", "@openai/codex"], env=env)
+
+    def ensure_config(self):
+        if not os.path.exists(CONFIG_PATH):
+            open(CONFIG_PATH, "w").close()
+
+    def run(self):
+        self.progress.start()
+        self.ensure_python()
+        self.ensure_node()
+        self.ensure_codex()
+        self.ensure_config()
+        self.progress.stop()
+        self.log("Setup complete!")
+        self.root.after(800, self.launch_chat)
+
+    def launch_chat(self):
+        self.root.destroy()
+        root = tk.Tk()
+        CodexChat(root)
+        root.mainloop()
+
+# =========================================================
+# CODEX CHAT UI
+# =========================================================
+class CodexChat:
+    def __init__(self, root):
+        self.root = root
+        root.title("Codex Desktop")
+        root.geometry("1100x750")
+
+        self.templates = load_templates()
+
+        bar = tk.Frame(root)
+        bar.pack(fill=tk.X)
+
+        self.search = tk.Entry(bar, width=40)
+        self.search.pack(side=tk.LEFT, padx=5)
+        tk.Button(bar, text="Search", command=self.search_history).pack(side=tk.LEFT)
+
+        self.template_var = tk.StringVar(value="Free Chat")
+        ttk.Combobox(
+            bar, values=list(self.templates.keys()),
+            textvariable=self.template_var, state="readonly", width=25
+        ).pack(side=tk.RIGHT, padx=5)
+
+        self.tabs = ttk.Notebook(root)
+        self.tabs.pack(fill=tk.BOTH, expand=True)
+
+        self.sessions = {}
+        self.add_tab()
+
+    def add_tab(self):
+        f = tk.Frame(self.tabs)
+        console = scrolledtext.ScrolledText(f, font=("Consolas", 11))
+        console.pack(fill=tk.BOTH, expand=True)
+        inp = tk.Text(f, height=4)
+        inp.pack(fill=tk.X)
+        tk.Button(f, text="Send", command=lambda: self.send(console, inp)).pack()
+        self.sessions[f] = []
+        self.tabs.add(f, text=f"Chat {len(self.sessions)}")
+
+    def send(self, console, inp):
+        text = inp.get("1.0", tk.END).strip()
+        inp.delete("1.0", tk.END)
+        tmpl = self.templates[self.template_var.get()]
+        final = f"{tmpl}\n{text}"
+        console.insert(tk.END, f"\nYou:\n{final}\n\n")
+
+        threading.Thread(
+            target=self.run_codex,
+            args=(console, final),
+            daemon=True
+        ).start()
+
+    def run_codex(self, console, prompt):
+        env = os.environ.copy()
+        env["PATH"] = NODE_DIR + ";" + env["PATH"]
+        cmd = ["powershell.exe", "-NoProfile", "-Command", f'codex "{prompt}"']
+        p = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, text=True,
+            env=env, creationflags=CREATE_NO_WINDOW
+        )
+        for c in iter(lambda: p.stdout.read(1), ""):
+            console.insert(tk.END, c)
+            console.see(tk.END)
+
+    def search_history(self):
+        q = self.search.get().lower()
+        matches = []
+        for f in os.listdir(CHAT_DIR):
+            with open(os.path.join(CHAT_DIR, f), encoding="utf-8") as fh:
+                if q in fh.read().lower():
+                    matches.append(f)
+        messagebox.showinfo("Search", "\n".join(matches) or "No matches")
+
+# =========================================================
+# ENTRY
+# =========================================================
+if __name__ == "__main__":
+    root = tk.Tk()
+    SetupGUI(root)
+    root.mainloop()
