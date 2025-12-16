@@ -178,8 +178,19 @@ class SetupGUI:
     def ensure_config(self):
         os.makedirs(CODEX_DIR, exist_ok=True)
         if not os.path.exists(CONFIG_PATH):
-            open(CONFIG_PATH, "w").close()
-            self.log(f"✔ config.toml ready at {CONFIG_PATH}")
+            # FIXED: Populate config.toml with anti-spam settings (disables context display & reduces output clutter)
+            config_content = """# Codex CLI Config - Anti-Spam Settings
+hide_agent_reasoning = true
+model_context_window = 0  # Disables "% context left" calculation/display
+model_reasoning_summary = "none"
+
+[tui]
+animations = false  # Static UI, no dynamic status updates
+notifications = false  # No desktop notifications/pop-ups
+"""
+            with open(CONFIG_PATH, "w") as f:
+                f.write(config_content)
+            self.log(f"✔ config.toml ready at {CONFIG_PATH} (with anti-spam config)")
 
     def run(self):
         self.progress.start()
@@ -188,7 +199,7 @@ class SetupGUI:
         self.ensure_codex()
         self.ensure_config()
         self.progress.stop()
-        self.set_status("Setup complete! Using ~/.codex for Codex home.")
+        self.set_status("Setup complete! Using ~/.codex for Codex home (spam suppressed).")
 
         tk.Button(
             self.root,
@@ -229,8 +240,8 @@ class ChatWindow:
 
         tk.Button(input_frame, text="Ask Codex", command=self.send_prompt).pack(side=tk.RIGHT)
 
-        # Context status label
-        self.context_label = tk.Label(self.win, text="Context: 100%", fg="green")
+        # Context status label (now optional, as config disables it)
+        self.context_label = tk.Label(self.win, text="Context: Disabled (spam-free)", fg="gray")
         self.context_label.pack(pady=(5, 0))
 
         # Spawn PowerShell with Codex (Set cwd to CODEX_DIR for consistency with .codex home)
@@ -252,7 +263,7 @@ class ChatWindow:
 
         self.current_context = 100
         self.output_buffer = ""  # Accumulate for better parsing (but search only new for latest %)
-        self.auto_compact_threshold = 20  # Auto-compact if below 20%
+        self.auto_compact_threshold = 20  # Auto-compact if below 20% (fallback, though disabled)
         self.critical_restart_threshold = 5  # Restart session if critically low
         self.last_auto_time = 0  # Cooldown for auto actions
         self.cooldown = 30  # Seconds between auto-compacts
