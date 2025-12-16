@@ -8,6 +8,7 @@ import tkinter as tk
 from tkinter import scrolledtext, ttk
 import threading
 import queue
+import sys
 
 # ---------------- USER HOME RESOLUTION ----------------
 def resolve_user_home():
@@ -63,11 +64,22 @@ def resolve_codex_cmd():
             return c
     raise FileNotFoundError("codex.cmd not found")
 
+# ---------------- ENSURE PYWINPTY ----------------
+def ensure_pywinpty():
+    try:
+        import winpty
+        return
+    except ImportError:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "pywinpty"],
+            check=True
+        )
+
 # ---------------- SETUP GUI ----------------
 class SetupGUI:
     def __init__(self, root):
         self.root = root
-        root.title("Codex Setup & Chat (No Admin)")
+        root.title("Codex Setup & Chat (True Interactive)")
         root.geometry("900x650")
 
         self.log_box = scrolledtext.ScrolledText(root, wrap=tk.WORD)
@@ -101,89 +113,12 @@ class SetupGUI:
             pass
         self.root.after(100, self.process_queue)
 
-    # ---------- PYTHON ----------
-    def ensure_python(self):
-        if os.path.exists(PYTHON_EXE):
-            self.log("✔ Python already installed")
-            return
-
-        self.set_status("Installing Python...")
-        os.makedirs(PYTHON_DIR, exist_ok=True)
-
-        zip_path = tempfile.mktemp(".zip")
-        urllib.request.urlretrieve(PYTHON_ZIP_URL, zip_path)
-
-        with zipfile.ZipFile(zip_path) as z:
-            z.extractall(PYTHON_DIR)
-        os.remove(zip_path)
-
-        with open(os.path.join(PYTHON_DIR, "python312._pth"), "a") as f:
-            f.write("\nimport site\n")
-
-        get_pip = tempfile.mktemp(".py")
-        urllib.request.urlretrieve(GET_PIP_URL, get_pip)
-        subprocess.run([PYTHON_EXE, get_pip], check=True)
-
-        self.log("✔ Python + pip installed")
-
-    # ---------- NODE ----------
-    def ensure_node(self):
-        if os.path.exists(os.path.join(NODE_DIR, "node.exe")):
-            self.log("✔ Node.js already installed")
-            return
-
-        self.set_status("Installing Node.js...")
-        os.makedirs(TOOLS_DIR, exist_ok=True)
-
-        zip_path = tempfile.mktemp(".zip")
-        urllib.request.urlretrieve(NODE_ZIP_URL, zip_path)
-
-        with zipfile.ZipFile(zip_path) as z:
-            z.extractall(TOOLS_DIR)
-        os.remove(zip_path)
-
-        extracted = next(d for d in os.listdir(TOOLS_DIR) if d.startswith("node-v"))
-        shutil.move(os.path.join(TOOLS_DIR, extracted), NODE_DIR)
-
-        self.log("✔ Node.js installed")
-
-    # ---------- CODEX ----------
-    def ensure_codex(self):
-        self.set_status("Installing Codex...")
-        npm = os.path.join(NODE_DIR, "npm.cmd")
-
-        env = os.environ.copy()
-        env["PATH"] = NODE_DIR + ";" + env["PATH"]
-
-        subprocess.run([npm, "config", "set", "prefix", NODE_DIR], env=env, check=True)
-        subprocess.run([npm, "install", "-g", "@openai/codex"], env=env, check=True)
-
-        self.log("✔ Codex installed")
-
-    # ---------- CONFIG ----------
-    def ensure_config(self):
-        self.set_status("Checking config.toml...")
-        os.makedirs(CODEX_DIR, exist_ok=True)
-
-        if not os.path.exists(CONFIG_PATH) or os.path.getsize(CONFIG_PATH) == 0:
-            open(CONFIG_PATH, "w").close()
-            self.log("✔ config.toml created (empty)")
-        else:
-            self.log("✔ config.toml exists")
-
-    # ---------- MAIN ----------
     def run(self):
         self.progress.start()
-
-        self.ensure_python()
-        self.ensure_node()
-        self.ensure_codex()
-        self.ensure_config()
-
+        ensure_pywinpty()
         self.progress.stop()
-        self.set_status("Setup complete!")
 
-        self.log("\nℹ If config.toml is empty, update it from https://hub.ai.com\n")
+        self.set_status("Setup complete!")
 
         tk.Button(
             self.root,
@@ -195,13 +130,16 @@ class SetupGUI:
     def open_chat(self):
         ChatWindow(self.root)
 
-# ---------------- CHAT WINDOW ----------------
+# ---------------- CHAT WINDOW (PTY BASED) ----------------
 class ChatWindow:
     def __init__(self, parent):
+        import winpty
+
         self.codex_cmd = resolve_codex_cmd()
+        self.pty = winpty.PtyProcess.spawn([self.codex_cmd])
 
         self.win = tk.Toplevel(parent)
-        self.win.title("Codex Interactive Chat")
+        self.win.title("Codex Interactive Chat (True TTY)")
         self.win.geometry("800x550")
 
         self.output = scrolledtext.ScrolledText(self.win, wrap=tk.WORD)
@@ -214,39 +152,26 @@ class ChatWindow:
         self.prompt.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         self.prompt.focus()
 
-        tk.Button(frame, text="Ask Codex", command=self.run_codex).pack(side=tk.RIGHT)
+        tk.Button(frame, text="Send", command=self.send).pack(side=tk.RIGHT)
 
-    def run_codex(self):
-        query = self.prompt.get().strip()
-        if not query:
+        threading.Thread(target=self.read_output, daemon=True).start()
+
+    def send(self):
+        text = self.prompt.get().strip()
+        if not text:
             return
-
-        self.output.insert(tk.END, f"\n🧑 You: {query}\n")
-        self.output.see(tk.END)
         self.prompt.delete(0, tk.END)
+        self.pty.write(text + "\r\n")
 
-        threading.Thread(target=self.exec_codex, args=(query,), daemon=True).start()
-
-    def exec_codex(self, query):
-        try:
-            proc = subprocess.Popen(
-                [self.codex_cmd],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1
-            )
-
-            proc.stdin.write(query + "\n")
-            proc.stdin.flush()
-
-            for line in proc.stdout:
-                self.output.insert(tk.END, line)
-                self.output.see(tk.END)
-
-        except Exception as e:
-            self.output.insert(tk.END, f"\n❌ Error: {e}\n")
+    def read_output(self):
+        while True:
+            try:
+                data = self.pty.read(1024)
+                if data:
+                    self.output.insert(tk.END, data)
+                    self.output.see(tk.END)
+            except Exception:
+                break
 
 # ---------------- ENTRY ----------------
 if __name__ == "__main__":
