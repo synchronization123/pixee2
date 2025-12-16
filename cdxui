@@ -11,7 +11,7 @@ import queue
 import time
 
 # =========================================================
-# USER HOME RESOLUTION (ORIGINAL)
+# USER HOME RESOLUTION
 # =========================================================
 def resolve_user_home():
     username = os.getenv("USERNAME")
@@ -42,7 +42,7 @@ def resolve_user_home():
 USER_HOME = resolve_user_home()
 
 # =========================================================
-# PATHS (ORIGINAL)
+# PATHS
 # =========================================================
 TOOLS_DIR = os.path.join(USER_HOME, "tools")
 PYTHON_DIR = os.path.join(TOOLS_DIR, "python")
@@ -57,7 +57,7 @@ os.makedirs(TOOLS_DIR, exist_ok=True)
 os.makedirs(CODEX_DIR, exist_ok=True)
 
 # =========================================================
-# URLS (ORIGINAL)
+# URLS
 # =========================================================
 PYTHON_ZIP_URL = "https://www.python.org/ftp/python/3.12.2/python-3.12.2-embed-amd64.zip"
 GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
@@ -66,7 +66,7 @@ NODE_ZIP_URL = "https://nodejs.org/dist/v24.12.0/node-v24.12.0-win-x64.zip"
 CREATE_NO_WINDOW = 0x08000000
 
 # =========================================================
-# SETUP GUI (ORIGINAL, SAFE)
+# SETUP GUI
 # =========================================================
 class SetupGUI:
     def __init__(self, root):
@@ -185,11 +185,9 @@ class CodexChat:
 
     def run_codex(self, prompt):
         out_file = os.path.join(tempfile.gettempdir(), "codex_output.txt")
+        escaped_prompt = prompt.replace('"', '`"')
 
-        ps_cmd = (
-            f'& "{CODEX_CMD}" "{prompt.replace(\'"\', \'\\\"\')}" '
-            f'| Out-File -Encoding utf8 "{out_file}"'
-        )
+        ps_cmd = f'& "{CODEX_CMD}" "{escaped_prompt}" | Out-File -Encoding utf8 "{out_file}"'
 
         subprocess.run(
             ["powershell.exe", "-NoProfile", "-Command", ps_cmd],
