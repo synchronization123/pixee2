@@ -8,11 +8,8 @@ import tkinter as tk
 from tkinter import scrolledtext, ttk
 import threading
 import queue
-import time
 
-# =========================================================
-# USER HOME RESOLUTION
-# =========================================================
+# ---------------- USER HOME RESOLUTION ----------------
 def resolve_user_home():
     username = os.getenv("USERNAME")
     candidates = []
@@ -22,6 +19,7 @@ def resolve_user_home():
         if username.lower().endswith(".corp"):
             candidates.append(fr"C:\Users\{username[:-5]}")
 
+    # also try USERPROFILE as fallback
     userprofile = os.getenv("USERPROFILE")
     if userprofile:
         candidates.append(userprofile)
@@ -35,208 +33,218 @@ def resolve_user_home():
                 os.remove(test)
                 return path
         except Exception:
-            pass
+            continue
 
-    raise RuntimeError("Unable to determine writable user home")
+    raise RuntimeError("Unable to determine a writable user home directory")
 
 USER_HOME = resolve_user_home()
 
-# =========================================================
-# PATHS
-# =========================================================
+# ---------------- PATHS (FIXED) ----------------
 TOOLS_DIR = os.path.join(USER_HOME, "tools")
+
 PYTHON_DIR = os.path.join(TOOLS_DIR, "python")
+PYTHON_EXE = os.path.join(PYTHON_DIR, "python.exe")
+
 NODE_DIR = os.path.join(TOOLS_DIR, "nodejs")
-NPM_GLOBAL = os.path.join(TOOLS_DIR, "npm-global")
 
-CODEX_CMD = os.path.join(NPM_GLOBAL, "codex.cmd")
-
+# 🔒 FIXED Codex location
 CODEX_DIR = os.path.join(USER_HOME, ".codex")
 CONFIG_PATH = os.path.join(CODEX_DIR, "config.toml")
 
-for d in (TOOLS_DIR, PYTHON_DIR, NODE_DIR, NPM_GLOBAL, CODEX_DIR):
-    os.makedirs(d, exist_ok=True)
-
-# =========================================================
-# URLS
-# =========================================================
 PYTHON_ZIP_URL = "https://www.python.org/ftp/python/3.12.2/python-3.12.2-embed-amd64.zip"
 GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
 NODE_ZIP_URL = "https://nodejs.org/dist/v24.12.0/node-v24.12.0-win-x64.zip"
 
-CREATE_NO_WINDOW = 0x08000000
-
-# =========================================================
-# SETUP GUI (SAFE)
-# =========================================================
+# ---------------- GUI ----------------
 class SetupGUI:
     def __init__(self, root):
         self.root = root
         root.title("Codex Setup (No Admin)")
         root.geometry("820x620")
 
-        self.log_box = scrolledtext.ScrolledText(root)
+        self.log_box = scrolledtext.ScrolledText(root, wrap=tk.WORD)
         self.log_box.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         self.progress = ttk.Progressbar(root, mode="indeterminate")
         self.progress.pack(fill=tk.X, padx=10)
 
-        self.q = queue.Queue()
-        self.running = True
-        self.after_id = None
+        self.status = tk.Label(root, text="Initializing...")
+        self.status.pack(pady=5)
 
-        self.schedule_queue()
+        self.q = queue.Queue()
+        self.root.after(100, self.process_queue)
+
         threading.Thread(target=self.run, daemon=True).start()
 
-    # ---------- SAFE QUEUE LOOP ----------
-    def schedule_queue(self):
-        if not self.running:
-            return
-        self.process_queue()
-        self.after_id = self.root.after(100, self.schedule_queue)
+    # ---------- UI ----------
+    def log(self, msg):
+        self.q.put(msg)
+
+    def set_status(self, msg):
+        self.q.put(f"[STATUS] {msg}")
+        self.status.config(text=msg)
 
     def process_queue(self):
         try:
             while True:
-                msg = self.q.get_nowait()
-                self.log_box.insert(tk.END, msg + "\n")
+                m = self.q.get_nowait()
+                self.log_box.insert(tk.END, m + "\n")
                 self.log_box.see(tk.END)
         except queue.Empty:
             pass
+        self.root.after(100, self.process_queue)
 
-    def log(self, msg):
-        self.q.put(msg)
-
-    # ---------- SETUP STEPS ----------
+    # ---------- PYTHON ----------
     def ensure_python(self):
-        if os.path.exists(os.path.join(PYTHON_DIR, "python.exe")):
-            self.log("✔ Python already installed")
+        if os.path.exists(PYTHON_EXE):
+            self.log("✔ Portable Python already installed")
             return
 
-        self.log("Installing Python...")
-        z = tempfile.mktemp(".zip")
-        urllib.request.urlretrieve(PYTHON_ZIP_URL, z)
-        zipfile.ZipFile(z).extractall(PYTHON_DIR)
-        os.remove(z)
+        self.set_status("Installing portable Python...")
+        os.makedirs(PYTHON_DIR, exist_ok=True)
 
-        with open(os.path.join(PYTHON_DIR, "python312._pth"), "a") as f:
+        zip_path = tempfile.mktemp(".zip")
+        urllib.request.urlretrieve(PYTHON_ZIP_URL, zip_path)
+
+        with zipfile.ZipFile(zip_path) as z:
+            z.extractall(PYTHON_DIR)
+        os.remove(zip_path)
+
+        pth = os.path.join(PYTHON_DIR, "python312._pth")
+        with open(pth, "a") as f:
             f.write("\nimport site\n")
 
-        p = tempfile.mktemp(".py")
-        urllib.request.urlretrieve(GET_PIP_URL, p)
-        subprocess.run([os.path.join(PYTHON_DIR, "python.exe"), p])
+        get_pip = tempfile.mktemp(".py")
+        urllib.request.urlretrieve(GET_PIP_URL, get_pip)
+        subprocess.run([PYTHON_EXE, get_pip], check=True)
 
+        self.log("✔ Python + pip installed")
+
+    # ---------- NODE ----------
     def ensure_node(self):
         if os.path.exists(os.path.join(NODE_DIR, "node.exe")):
             self.log("✔ Node.js already installed")
             return
 
-        self.log("Installing Node.js...")
-        z = tempfile.mktemp(".zip")
-        urllib.request.urlretrieve(NODE_ZIP_URL, z)
-        zipfile.ZipFile(z).extractall(TOOLS_DIR)
-        os.remove(z)
+        self.set_status("Installing Node.js...")
+        os.makedirs(TOOLS_DIR, exist_ok=True)
+
+        zip_path = tempfile.mktemp(".zip")
+        urllib.request.urlretrieve(NODE_ZIP_URL, zip_path)
+
+        with zipfile.ZipFile(zip_path) as z:
+            z.extractall(TOOLS_DIR)
+        os.remove(zip_path)
 
         extracted = next(d for d in os.listdir(TOOLS_DIR) if d.startswith("node-v"))
         shutil.move(os.path.join(TOOLS_DIR, extracted), NODE_DIR)
 
+        self.log("✔ Node.js installed")
+
+    # ---------- USER PATH ----------
+    def set_user_path(self):
+        self.set_status("Updating user PATH...")
+        current = os.environ.get("PATH", "")
+
+        if NODE_DIR.lower() not in current.lower():
+            subprocess.run(
+                ["setx", "PATH", current + ";" + NODE_DIR],
+                shell=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+
+        self.log("✔ User PATH updated")
+
+    # ---------- CODEX ----------
     def ensure_codex(self):
-        if os.path.exists(CODEX_CMD):
-            self.log("✔ Codex already installed")
-            return
+        self.set_status("Installing Codex...")
 
-        self.log("Installing Codex (safe mode)...")
         npm = os.path.join(NODE_DIR, "npm.cmd")
-        env = {"PATH": NODE_DIR}
+        env = os.environ.copy()
+        env["PATH"] = NODE_DIR + ";" + env["PATH"]
 
-        subprocess.run([npm, "config", "set", "prefix", NPM_GLOBAL], env=env)
+        subprocess.run([npm, "config", "set", "prefix", NODE_DIR], env=env)
+        subprocess.run([npm, "install", "-g", "@openai/codex"], env=env)
 
-        subprocess.run(
-            [npm, "install", "-g", "@openai/codex"],
-            env=env,
-            check=True
-        )
         self.log("✔ Codex installed")
 
-    def ensure_config(self):
-        if not os.path.exists(CONFIG_PATH):
-            open(CONFIG_PATH, "w").close()
-            self.log("✔ config.toml created")
+        subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-Command",
+                "Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force"
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        self.log("✔ PowerShell ExecutionPolicy set")
 
+    # ---------- CONFIG ----------
+    def ensure_config(self):
+        self.set_status("Validating config.toml...")
+
+        os.makedirs(CODEX_DIR, exist_ok=True)
+
+        recreate = False
+        if not os.path.exists(CONFIG_PATH):
+            recreate = True
+        elif os.path.getsize(CONFIG_PATH) == 0:
+            os.remove(CONFIG_PATH)
+            recreate = True
+
+        if recreate:
+            subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-Command",
+                    'New-Item -ItemType File -Path "$env:USERPROFILE\\.codex\\config.toml" -Force | Out-Null'
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            self.log("✔ config.toml created (empty)")
+        else:
+            self.log("✔ config.toml already present")
+
+    # ---------- MAIN ----------
     def run(self):
         self.progress.start()
+
         self.ensure_python()
         self.ensure_node()
+        self.set_user_path()
         self.ensure_codex()
         self.ensure_config()
+
         self.progress.stop()
-        self.log("✅ Setup complete")
-        self.root.after(800, self.launch_chat)
+        self.set_status("Setup complete!")
 
-    def launch_chat(self):
-        self.running = False
-        if self.after_id:
-            self.root.after_cancel(self.after_id)
-        self.root.destroy()
+        self.log("")
+        self.log("ℹ IMPORTANT NOTE:")
+        self.log("If config.toml is empty, navigate to:")
+        self.log(CODEX_DIR)
+        self.log("and add the required data from:")
+        self.log("https://hub.ai.com")
+        self.log("")
 
-        root = tk.Tk()
-        CodexChat(root)
-        root.mainloop()
+        self.log('✅ Usage: codex "your prompt"')
 
-# =========================================================
-# CODEX CHAT (RESPONSE SHOWN)
-# =========================================================
-class CodexChat:
-    def __init__(self, root):
-        self.root = root
-        root.title("Codex Desktop")
-        root.geometry("1000x700")
-
-        self.console = scrolledtext.ScrolledText(root, font=("Consolas", 11))
-        self.console.pack(fill=tk.BOTH, expand=True)
-
-        self.input = tk.Text(root, height=4)
-        self.input.pack(fill=tk.X)
-
-        tk.Button(root, text="Send", command=self.send).pack(pady=6)
-
-    def send(self):
-        prompt = self.input.get("1.0", tk.END).strip()
-        self.input.delete("1.0", tk.END)
-        if not prompt:
-            return
-
-        self.console.insert(tk.END, f"\n👤 You:\n{prompt}\n\n")
-        threading.Thread(target=self.run_codex, args=(prompt,), daemon=True).start()
-
-    def append_text(self, text):
-        self.console.insert(tk.END, text)
-        self.console.see(tk.END)
-
-    def run_codex(self, prompt):
-        out_file = os.path.join(tempfile.gettempdir(), "codex_out.txt")
-        escaped = prompt.replace('"', '`"')
-
-        ps_cmd = f'& "{CODEX_CMD}" "{escaped}" | Out-File -Encoding utf8 "{out_file}"'
-
-        subprocess.run(
-            ["powershell.exe", "-NoProfile", "-Command", ps_cmd],
-            creationflags=CREATE_NO_WINDOW
+        btn = tk.Button(
+            self.root,
+            text="Open PowerShell (Codex Ready)",
+            command=self.open_powershell
         )
+        btn.pack(pady=10)
 
-        if os.path.exists(out_file):
-            with open(out_file, encoding="utf-8") as f:
-                response = f.read()
-            os.remove(out_file)
-        else:
-            response = "\n⚠ No response from Codex\n"
+    # ---------- POWERSHELL ----------
+    def open_powershell(self):
+        ps_cmd = f'$env:PATH="{NODE_DIR};$env:PATH"'
+        subprocess.Popen(["powershell.exe", "-NoExit", "-Command", ps_cmd])
 
-        # 🔒 UI UPDATE MUST BE ON MAIN THREAD
-        self.root.after(0, self.append_text, response)
-
-# =========================================================
-# ENTRY
-# =========================================================
+# ---------------- ENTRY ----------------
 if __name__ == "__main__":
     root = tk.Tk()
     SetupGUI(root)
