@@ -1,10 +1,27 @@
 import os
+import zipfile
+import urllib.request
+import shutil
 import subprocess
+import tempfile
 import tkinter as tk
 from tkinter import scrolledtext, ttk
 import threading
 import queue
 import re
+import winpty  # REQUIRED for real terminal (ConPTY)
+
+# ---------------- ANSI CLEANING ----------------
+ANSI_ESCAPE_RE = re.compile(
+    r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])"
+)
+
+def clean_terminal_output(text: str) -> str:
+    if not text:
+        return ""
+    text = ANSI_ESCAPE_RE.sub("", text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return text
 
 # ---------------- USER HOME RESOLUTION ----------------
 def resolve_user_home():
@@ -21,17 +38,29 @@ def resolve_user_home():
         candidates.append(userprofile)
 
     for path in dict.fromkeys(candidates):
-        if path and os.path.isdir(path):
-            return path
+        try:
+            if path and os.path.isdir(path):
+                test = os.path.join(path, ".perm_test")
+                with open(test, "w") as f:
+                    f.write("test")
+                os.remove(test)
+                return path
+        except Exception:
+            continue
 
-    raise RuntimeError("Unable to determine user home")
+    raise RuntimeError("Unable to determine writable user home directory")
 
 USER_HOME = resolve_user_home()
 
-# ---------------- PATHS ----------------
-NODE_DIR = os.path.join(USER_HOME, "tools", "nodejs")
+# ---------------- FORCE CODEX HOME ----------------
 CODEX_DIR = os.path.join(USER_HOME, ".codex")
+CONFIG_PATH = os.path.join(CODEX_DIR, "config.toml")
 
+# ---------------- TOOL PATHS ----------------
+TOOLS_DIR = os.path.join(USER_HOME, "tools")
+NODE_DIR = os.path.join(TOOLS_DIR, "nodejs")
+
+# ---------------- RESOLVE CODEX CMD ----------------
 def resolve_codex_cmd():
     candidates = [
         os.path.join(NODE_DIR, "codex.cmd"),
@@ -43,76 +72,88 @@ def resolve_codex_cmd():
             return c
     raise FileNotFoundError("codex.cmd not found")
 
-CODEX_CMD = resolve_codex_cmd()
-
-# ---------------- ANSI CLEAN ----------------
-ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
-
-def clean(text):
-    return ANSI_ESCAPE.sub("", text).replace("\r\n", "\n").replace("\r", "\n")
-
-# ---------------- GUI ----------------
-class CodexGUI:
+# ---------------- SETUP GUI ----------------
+class SetupGUI:
     def __init__(self, root):
-        root.title("Codex GUI (Stable)")
-        root.geometry("900x600")
+        self.root = root
+        root.title("Codex GUI (PowerShell-Equivalent)")
+        root.geometry("900x650")
 
-        self.output = scrolledtext.ScrolledText(root, wrap=tk.WORD)
+        self.log_box = scrolledtext.ScrolledText(root, wrap=tk.WORD)
+        self.log_box.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        self.progress = ttk.Progressbar(root, mode="indeterminate")
+        self.progress.pack(fill=tk.X, padx=10)
+
+        self.status = tk.Label(root, text="Ready")
+        self.status.pack(pady=5)
+
+        tk.Button(
+            root,
+            text="Open Codex Chat",
+            font=("Segoe UI", 11, "bold"),
+            command=self.open_chat
+        ).pack(pady=10)
+
+    def open_chat(self):
+        ChatWindow(self.root)
+
+# ---------------- CHAT WINDOW (FINAL & CORRECT) ----------------
+class ChatWindow:
+    def __init__(self, parent):
+        self.codex_cmd = resolve_codex_cmd()
+
+        self.win = tk.Toplevel(parent)
+        self.win.title("Codex Interactive Chat")
+        self.win.geometry("800x550")
+
+        self.output = scrolledtext.ScrolledText(self.win, wrap=tk.WORD)
         self.output.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        frame = tk.Frame(root)
+        frame = tk.Frame(self.win)
         frame.pack(fill=tk.X, padx=10, pady=5)
 
         self.prompt = tk.Entry(frame)
         self.prompt.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         self.prompt.focus()
 
-        tk.Button(frame, text="Ask Codex", command=self.ask).pack(side=tk.RIGHT)
+        tk.Button(frame, text="Ask Codex", command=self.send_prompt).pack(side=tk.RIGHT)
 
-        self.q = queue.Queue()
-        root.after(100, self.process_queue)
+        # 🔑 CRITICAL FIX: start Codex exactly like PowerShell
+        self.pty = winpty.PtyProcess.spawn(
+            [self.codex_cmd, "resume"],
+            env={**os.environ, "CODEX_HOME": CODEX_DIR, "USERPROFILE": USER_HOME}
+        )
 
-    def process_queue(self):
-        try:
-            while True:
-                msg = self.q.get_nowait()
-                self.output.insert(tk.END, msg)
-                self.output.see(tk.END)
-        except queue.Empty:
-            pass
-        self.output.after(100, self.process_queue)
+        threading.Thread(target=self.read_output, daemon=True).start()
 
-    def ask(self):
+    def send_prompt(self):
         query = self.prompt.get().strip()
         if not query:
             return
 
-        self.output.insert(tk.END, f"\n🧑 You: {query}\n🤖 Codex:\n")
+        self.output.insert(tk.END, f"\n🧑 You: {query}\n")
+        self.output.see(tk.END)
         self.prompt.delete(0, tk.END)
 
-        threading.Thread(target=self.run_codex, args=(query,), daemon=True).start()
+        # Submit prompt normally
+        self.pty.write(query + "\r\n")
 
-    def run_codex(self, query):
+    def read_output(self):
         try:
-            env = os.environ.copy()
-            env["CODEX_HOME"] = CODEX_DIR
-            env["USERPROFILE"] = USER_HOME
-
-            proc = subprocess.run(
-                [CODEX_CMD, query],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                env=env
-            )
-
-            self.q.put(clean(proc.stdout) + "\n")
-
+            while True:
+                data = self.pty.read(4096)
+                if not data:
+                    break
+                cleaned = clean_terminal_output(data)
+                if cleaned.strip():
+                    self.output.insert(tk.END, cleaned)
+                    self.output.see(tk.END)
         except Exception as e:
-            self.q.put(f"\n❌ Error: {e}\n")
+            self.output.insert(tk.END, f"\n❌ Error: {e}\n")
 
 # ---------------- ENTRY ----------------
 if __name__ == "__main__":
     root = tk.Tk()
-    CodexGUI(root)
+    SetupGUI(root)
     root.mainloop()
