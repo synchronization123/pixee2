@@ -9,12 +9,10 @@ from tkinter import scrolledtext, ttk
 import threading
 import queue
 import re
-import winpty  # REQUIRED for real terminal (ConPTY)
+import winpty  # ConPTY support (required)
 
 # ---------------- ANSI CLEANING ----------------
-ANSI_ESCAPE_RE = re.compile(
-    r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])"
-)
+ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 def clean_terminal_output(text: str) -> str:
     if not text:
@@ -48,7 +46,7 @@ def resolve_user_home():
         except Exception:
             continue
 
-    raise RuntimeError("Unable to determine writable user home directory")
+    raise RuntimeError("Unable to determine writable user home")
 
 USER_HOME = resolve_user_home()
 
@@ -66,23 +64,11 @@ PYTHON_ZIP_URL = "https://www.python.org/ftp/python/3.12.2/python-3.12.2-embed-a
 GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
 NODE_ZIP_URL = "https://nodejs.org/dist/v24.12.0/node-v24.12.0-win-x64.zip"
 
-# ---------------- RESOLVE CODEX CMD ----------------
-def resolve_codex_cmd():
-    candidates = [
-        os.path.join(NODE_DIR, "codex.cmd"),
-        os.path.join(NODE_DIR, "bin", "codex.cmd"),
-        os.path.join(NODE_DIR, "node_modules", ".bin", "codex.cmd"),
-    ]
-    for c in candidates:
-        if os.path.exists(c):
-            return c
-    raise FileNotFoundError("codex.cmd not found")
-
 # ---------------- SETUP GUI ----------------
 class SetupGUI:
     def __init__(self, root):
         self.root = root
-        root.title("Codex Setup & Chat (No Admin)")
+        root.title("Codex Setup & Chat (PowerShell)")
         root.geometry("900x650")
 
         self.log_box = scrolledtext.ScrolledText(root, wrap=tk.WORD)
@@ -175,7 +161,6 @@ class SetupGUI:
         self.log("✔ Codex installed")
 
     def ensure_config(self):
-        self.set_status("Validating config.toml...")
         os.makedirs(CODEX_DIR, exist_ok=True)
         if not os.path.exists(CONFIG_PATH):
             open(CONFIG_PATH, "w").close()
@@ -200,13 +185,11 @@ class SetupGUI:
     def open_chat(self):
         ChatWindow(self.root)
 
-# ---------------- CHAT WINDOW (FINAL STABLE) ----------------
+# ---------------- CHAT WINDOW (POWERSHELL HOST) ----------------
 class ChatWindow:
     def __init__(self, parent):
-        self.codex_cmd = resolve_codex_cmd()
-
         self.win = tk.Toplevel(parent)
-        self.win.title("Codex Interactive Chat")
+        self.win.title("Codex Interactive Chat (PowerShell)")
         self.win.geometry("800x550")
 
         self.output = scrolledtext.ScrolledText(self.win, wrap=tk.WORD)
@@ -221,9 +204,20 @@ class ChatWindow:
 
         tk.Button(frame, text="Ask Codex", command=self.send_prompt).pack(side=tk.RIGHT)
 
+        # Spawn PowerShell with Codex
         self.pty = winpty.PtyProcess.spawn(
-            [self.codex_cmd],
-            env={**os.environ, "CODEX_HOME": CODEX_DIR, "USERPROFILE": USER_HOME}
+            [
+                "powershell.exe",
+                "-NoLogo",
+                "-NoExit",
+                "-Command",
+                "codex"
+            ],
+            env={
+                **os.environ,
+                "CODEX_HOME": CODEX_DIR,
+                "USERPROFILE": USER_HOME,
+            }
         )
 
         threading.Thread(target=self.read_output, daemon=True).start()
@@ -237,7 +231,7 @@ class ChatWindow:
         self.output.see(tk.END)
         self.prompt.delete(0, tk.END)
 
-        # DOUBLE ENTER submits compose safely (no EOF)
+        # DOUBLE ENTER submits compose safely
         self.pty.write(query + "\r\n\r\n")
 
     def read_output(self):
