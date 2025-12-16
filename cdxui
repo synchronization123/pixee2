@@ -5,12 +5,13 @@ import shutil
 import subprocess
 import tempfile
 import tkinter as tk
-from tkinter import scrolledtext, ttk
+from tkinter import scrolledtext, ttk, messagebox
 import threading
 import queue
 import re
 import winpty  # ConPTY support (required)
 import time  # For cooldowns
+import socket  # For error checking
 
 # ---------------- ANSI CLEANING & CONTEXT FILTER ----------------
 ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
@@ -177,20 +178,19 @@ class SetupGUI:
 
     def ensure_config(self):
         os.makedirs(CODEX_DIR, exist_ok=True)
-        if not os.path.exists(CONFIG_PATH):
-            # Populate config.toml with anti-spam settings (disables context display & reduces output clutter)
-            config_content = """# Codex CLI Config - Anti-Spam Settings
+        # FIXED: Use valid config.toml keys based on OpenAI docs (disable TUI animations/notifications; no direct context disable, so rely on filter)
+        config_content = """# Codex CLI Config - Reduced Output
+[features]
 hide_agent_reasoning = true
-model_context_window = 0  # Disables "% context left" calculation/display
 model_reasoning_summary = "none"
 
 [tui]
-animations = false  # Static UI, no dynamic status updates
-notifications = false  # No desktop notifications/pop-ups
+animations = false
+notifications = false
 """
-            with open(CONFIG_PATH, "w") as f:
-                f.write(config_content)
-            self.log(f"✔ config.toml ready at {CONFIG_PATH} (with anti-spam config)")
+        with open(CONFIG_PATH, "w") as f:
+            f.write(config_content)
+        self.log(f"✔ config.toml ready at {CONFIG_PATH} (reduced output)")
 
     def run(self):
         self.progress.start()
@@ -199,7 +199,7 @@ notifications = false  # No desktop notifications/pop-ups
         self.ensure_codex()
         self.ensure_config()
         self.progress.stop()
-        self.set_status("Setup complete! Using ~/.codex for Codex home (spam suppressed).")
+        self.set_status("Setup complete! Using ~/.codex for Codex home.")
 
         tk.Button(
             self.root,
@@ -229,7 +229,7 @@ class ChatWindow:
         tk.Button(button_frame, text="Clear (/clear)", command=lambda: self.send_command('/clear')).pack(side=tk.LEFT, padx=5)
         tk.Button(button_frame, text="New Session (/new)", command=lambda: self.send_command('/new')).pack(side=tk.LEFT, padx=5)
 
-        # NEW: Background mode toggle (starts plain PS, then sends "codex")
+        # Background mode toggle
         self.bg_mode = tk.BooleanVar(value=False)
         tk.Checkbutton(button_frame, text="Background PS Mode", variable=self.bg_mode, command=self.restart_pty).pack(side=tk.LEFT, padx=5)
 
@@ -244,8 +244,8 @@ class ChatWindow:
 
         tk.Button(input_frame, text="Ask Codex", command=self.send_prompt).pack(side=tk.RIGHT)
 
-        # Context status label (now optional, as config disables it)
-        self.context_label = tk.Label(self.win, text="Context: Disabled (spam-free)", fg="gray")
+        # Context status label (updated to reflect filtering)
+        self.context_label = tk.Label(self.win, text="Context: Filtered (spam-free)", fg="gray")
         self.context_label.pack(pady=(5, 0))
 
         self.pty = None
@@ -255,18 +255,30 @@ class ChatWindow:
         self.critical_restart_threshold = 5
         self.last_auto_time = 0
         self.cooldown = 30
+        self.read_thread = None  # Track thread for restart
 
         self.restart_pty()  # Initial start
-        threading.Thread(target=self.read_output, daemon=True).start()
 
     def restart_pty(self):
         if self.pty:
-            self.pty.close()
+            try:
+                self.pty.close()
+            except:
+                pass
+        if self.read_thread and self.read_thread.is_alive():
+            # Can't kill thread easily, but new one will take over
+            pass
+
         env = {
             **os.environ,
             "CODEX_HOME": CODEX_DIR,
             "USERPROFILE": USER_HOME,
         }
+        self.output.config(state=tk.NORMAL)
+        self.output.insert(tk.END, "\n[Restart] Reloading PTY session...\n")
+        self.output.see(tk.END)
+        self.output.config(state=tk.DISABLED)
+
         if self.bg_mode.get():
             # Background mode: Start plain PS, then send "codex\n" after a beat
             self.pty = winpty.PtyProcess.spawn(
@@ -275,16 +287,19 @@ class ChatWindow:
                 env=env
             )
             threading.Timer(0.5, lambda: self.pty.write("codex\r\n")).start()
-            self.output.insert(tk.END, "\n[BG Mode] Started PowerShell and invoked 'codex'...\n")
+            self.insert_output("[BG Mode] Started PowerShell and invoked 'codex'...\n")
         else:
-            # Default: Direct "codex" invocation (faster, as before)
+            # Default: Direct "codex" invocation
             self.pty = winpty.PtyProcess.spawn(
                 ["powershell.exe", "-NoLogo", "-NoExit", "-Command", "codex"],
                 cwd=CODEX_DIR,
                 env=env
             )
-            self.output.insert(tk.END, "\n[Direct Mode] Launched Codex CLI...\n")
-        self.output.see(tk.END)
+            self.insert_output("[Direct Mode] Launched Codex CLI...\n")
+
+        # Restart read thread
+        self.read_thread = threading.Thread(target=self.read_output, daemon=True)
+        self.read_thread.start()
 
     def insert_output(self, text):
         self.output.config(state=tk.NORMAL)
@@ -299,6 +314,10 @@ class ChatWindow:
             self.current_context = percentage
 
     def send_command(self, cmd):
+        if not self.pty:
+            messagebox.showwarning("Warning", "PTY not active. Restarting...")
+            self.restart_pty()
+            return
         self.insert_output(f"\n[Command] {cmd}\n")
         self.pty.write(cmd + '\r\n')
 
@@ -306,34 +325,42 @@ class ChatWindow:
         query = self.prompt.get().strip()
         if not query:
             return
+        if not self.pty:
+            messagebox.showwarning("Warning", "PTY not active. Restarting...")
+            self.restart_pty()
+            return
 
         self.insert_output(f"\n🧑 You: {query}\n")
         self.prompt.delete(0, tk.END)
-
-        # Send query followed by enter
         self.pty.write(query + '\r\n')
 
     def read_output(self):
-        try:
-            while True:
+        consecutive_errors = 0
+        max_consecutive = 3  # Restart after 3 consecutive aborts
+        while True:
+            try:
                 if not self.pty:
                     time.sleep(0.1)
                     continue
                 data = self.pty.read(4096)
                 if not data:
-                    break
-                # Handle both str and bytes from winpty (pywinpty returns str)
+                    time.sleep(0.1)
+                    continue
+
+                consecutive_errors = 0  # Reset on successful read
+
+                # Handle both str and bytes from winpty
                 if isinstance(data, bytes):
                     text = data.decode('utf-8', errors='ignore')
                 else:
                     text = data
-                # Parse raw text first for context (before cleaning/filtering)
+
+                # Parse raw text first for context
                 match = CONTEXT_RE.search(text)
                 if match:
                     percentage = int(match.group(1))
                     self.update_context_status(percentage)
                     now = time.time()
-                    # Auto-compact if low, with cooldown and only if lower than current
                     if (percentage < self.auto_compact_threshold and 
                         percentage < self.current_context and 
                         now - self.last_auto_time > self.cooldown and 
@@ -342,11 +369,9 @@ class ChatWindow:
                         self.last_auto_time = now
                         self.insert_output(f"\n[Auto] Context low ({percentage}%) - Sending /compact...\n")
                         self.send_command('/compact')
-                        # Reset flag after a delay
                         threading.Timer(5.0, lambda: setattr(self, '_compacting', False)).start()
-                    # Critical low? Restart after compact cooldown
                     elif (percentage < self.critical_restart_threshold and 
-                          now - self.last_auto_time > self.cooldown * 2 and  # Longer for restart
+                          now - self.last_auto_time > self.cooldown * 2 and 
                           not hasattr(self, '_restarting')):
                         self._restarting = True
                         self.last_auto_time = now
@@ -354,18 +379,29 @@ class ChatWindow:
                         self.send_command('/new')
                         threading.Timer(10.0, lambda: setattr(self, '_restarting', False)).start()
 
-                # Now clean and filter for display
+                # Clean and filter for display
                 cleaned = clean_terminal_output(text, filter_context=True)
                 if cleaned.strip():
                     self.output_buffer += cleaned
                     self.insert_output(cleaned)
-
-                    # Trim buffer if too long to prevent memory issues
                     if len(self.output_buffer) > 10000:
                         self.output_buffer = self.output_buffer[-5000:]
 
-        except Exception as e:
-            self.insert_output(f"\n❌ Error reading output: {e}\n")
+            except socket.error as e:
+                if e.errno == 10053:  # WSAECONNABORTED
+                    consecutive_errors += 1
+                    self.insert_output(f"\n[Conn Abort #{consecutive_errors}] WinError 10053 detected - retrying...\n")
+                    if consecutive_errors >= max_consecutive:
+                        self.insert_output(f"\n[Restart] Too many aborts - auto-restarting PTY...\n")
+                        self.win.after(0, self.restart_pty)  # Schedule on main thread
+                        break
+                    time.sleep(1)  # Brief pause before retry
+                else:
+                    self.insert_output(f"\n❌ Socket error: {e}\n")
+                    break
+            except Exception as e:
+                self.insert_output(f"\n❌ Error reading output: {e}\n")
+                break
 
 # ---------------- ENTRY ----------------
 if __name__ == "__main__":
