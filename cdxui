@@ -12,15 +12,20 @@ import re
 import winpty  # ConPTY support (required)
 import time  # For cooldowns
 
-# ---------------- ANSI CLEANING ----------------
+# ---------------- ANSI CLEANING & CONTEXT FILTER ----------------
 ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+CONTEXT_RE = re.compile(r'(\d+)% context left')
 
-def clean_terminal_output(text: str) -> str:
+def clean_terminal_output(text: str, filter_context: bool = True) -> str:
     if not text:
         return ""
     text = ANSI_ESCAPE_RE.sub("", text)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
-    return text
+    if filter_context:
+        # NEW: Filter out lines containing "% context left" to reduce spam in display
+        lines = [line for line in text.split('\n') if not CONTEXT_RE.search(line)]
+        text = '\n'.join(lines)
+    return text.strip() + '\n'  # Ensure trailing newline for clean insertion
 
 # ---------------- USER HOME RESOLUTION ----------------
 def resolve_user_home():
@@ -64,9 +69,6 @@ NODE_DIR = os.path.join(TOOLS_DIR, "nodejs")
 PYTHON_ZIP_URL = "https://www.python.org/ftp/python/3.12.2/python-3.12.2-embed-amd64.zip"
 GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
 NODE_ZIP_URL = "https://nodejs.org/dist/v24.12.0/node-v24.12.0-win-x64.zip"
-
-# ---------------- CONTEXT MONITORING ----------------
-CONTEXT_RE = re.compile(r'(\d+)% context left')
 
 # ---------------- SETUP GUI ----------------
 class SetupGUI:
@@ -295,37 +297,38 @@ class ChatWindow:
                     text = data.decode('utf-8', errors='ignore')
                 else:
                     text = data
-                cleaned = clean_terminal_output(text)
+                # FIXED: Parse raw text first for context (before cleaning/filtering)
+                match = CONTEXT_RE.search(text)
+                if match:
+                    percentage = int(match.group(1))
+                    self.update_context_status(percentage)
+                    now = time.time()
+                    # Auto-compact if low, with cooldown and only if lower than current
+                    if (percentage < self.auto_compact_threshold and 
+                        percentage < self.current_context and 
+                        now - self.last_auto_time > self.cooldown and 
+                        not hasattr(self, '_compacting')):
+                        self._compacting = True
+                        self.last_auto_time = now
+                        self.insert_output(f"\n[Auto] Context low ({percentage}%) - Sending /compact...\n")
+                        self.send_command('/compact')
+                        # Reset flag after a delay
+                        threading.Timer(5.0, lambda: setattr(self, '_compacting', False)).start()
+                    # Critical low? Restart after compact cooldown
+                    elif (percentage < self.critical_restart_threshold and 
+                          now - self.last_auto_time > self.cooldown * 2 and  # Longer for restart
+                          not hasattr(self, '_restarting')):
+                        self._restarting = True
+                        self.last_auto_time = now
+                        self.insert_output(f"\n[Critical] Context critically low ({percentage}%) - Restarting session...\n")
+                        self.send_command('/new')
+                        threading.Timer(10.0, lambda: setattr(self, '_restarting', False)).start()
+
+                # Now clean and filter for display
+                cleaned = clean_terminal_output(text, filter_context=True)
                 if cleaned.strip():
                     self.output_buffer += cleaned
                     self.insert_output(cleaned)
-
-                    # FIXED: Parse for context percentage in NEW output only (latest)
-                    match = CONTEXT_RE.search(cleaned)
-                    if match:
-                        percentage = int(match.group(1))
-                        self.update_context_status(percentage)
-                        now = time.time()
-                        # Auto-compact if low, with cooldown and only if lower than current
-                        if (percentage < self.auto_compact_threshold and 
-                            percentage < self.current_context and 
-                            now - self.last_auto_time > self.cooldown and 
-                            not hasattr(self, '_compacting')):
-                            self._compacting = True
-                            self.last_auto_time = now
-                            self.insert_output(f"\n[Auto] Context low ({percentage}%) - Sending /compact...\n")
-                            self.send_command('/compact')
-                            # Reset flag after a delay
-                            threading.Timer(5.0, lambda: setattr(self, '_compacting', False)).start()
-                        # Critical low? Restart after compact cooldown
-                        elif (percentage < self.critical_restart_threshold and 
-                              now - self.last_auto_time > self.cooldown * 2 and  # Longer for restart
-                              not hasattr(self, '_restarting')):
-                            self._restarting = True
-                            self.last_auto_time = now
-                            self.insert_output(f"\n[Critical] Context critically low ({percentage}%) - Restarting session...\n")
-                            self.send_command('/new')
-                            threading.Timer(10.0, lambda: setattr(self, '_restarting', False)).start()
 
                     # Trim buffer if too long to prevent memory issues
                     if len(self.output_buffer) > 10000:
