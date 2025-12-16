@@ -9,8 +9,8 @@ from tkinter import scrolledtext, ttk
 import threading
 import queue
 import re
-import winpty  # ConPTY support (required)
-import time  # For cooldowns
+import winpty
+import time
 
 # ---------------- ANSI CLEANING & CONTEXT FILTER ----------------
 ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
@@ -24,7 +24,7 @@ def clean_terminal_output(text: str, filter_context: bool = True) -> str:
     if filter_context:
         lines = [line for line in text.split('\n') if not CONTEXT_RE.search(line)]
         text = '\n'.join(lines)
-    return text.strip() + '\n'
+    return text + '\n'
 
 # ---------------- USER HOME RESOLUTION ----------------
 def resolve_user_home():
@@ -165,17 +165,11 @@ class SetupGUI:
 
         self.log("✔ Codex installed")
 
-    def ensure_config(self):
-        # 🔒 INTENTIONALLY LEFT EMPTY
-        # As per instruction: DO NOT CREATE / MODIFY / DELETE config.toml
-        self.log("ℹ config.toml untouched as instructed")
-
     def run(self):
         self.progress.start()
         self.ensure_python()
         self.ensure_node()
         self.ensure_codex()
-        self.ensure_config()
         self.progress.stop()
         self.set_status("Setup complete")
 
@@ -189,11 +183,11 @@ class SetupGUI:
     def open_chat(self):
         ChatWindow(self.root)
 
-# ---------------- CHAT WINDOW (FIXED PTY) ----------------
+# ---------------- CHAT WINDOW ----------------
 class ChatWindow:
     def __init__(self, parent):
         self.win = tk.Toplevel(parent)
-        self.win.title("Codex Interactive Chat (PowerShell)")
+        self.win.title("Codex Interactive Chat")
         self.win.geometry("800x550")
 
         self.output = scrolledtext.ScrolledText(self.win, wrap=tk.WORD, state=tk.DISABLED)
@@ -203,21 +197,24 @@ class ChatWindow:
         input_frame.pack(fill=tk.X, padx=10, pady=5)
 
         self.prompt = tk.Entry(input_frame)
-        self.prompt.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
-        self.prompt.focus()
-        self.prompt.bind('<Return>', lambda e: self.send_prompt())
+        self.prompt.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.prompt.bind("<Return>", self.send_prompt)
 
         tk.Button(input_frame, text="Ask Codex", command=self.send_prompt).pack(side=tk.RIGHT)
 
         self.pty = None
-        self.start_pty()
+        self.codex_ready = False
+        self.pending_queue = []
 
+        self.start_pty()
         threading.Thread(target=self.read_output, daemon=True).start()
 
     def start_pty(self):
-        env = os.environ.copy()
-        env["CODEX_HOME"] = CODEX_DIR
-        env["USERPROFILE"] = USER_HOME
+        env = {
+            **os.environ,
+            "CODEX_HOME": CODEX_DIR,
+            "USERPROFILE": USER_HOME
+        }
 
         self.pty = winpty.PtyProcess.spawn(
             ["powershell.exe", "-NoLogo", "-NoExit"],
@@ -225,9 +222,14 @@ class ChatWindow:
             env=env
         )
 
-        time.sleep(0.5)
-        self.pty.write("codex\r\n")
-        self.insert_output("[INFO] Codex ready\n")
+        threading.Timer(0.5, lambda: self.safe_write("codex\r\n")).start()
+
+    def safe_write(self, text):
+        try:
+            if self.pty:
+                self.pty.write(text)
+        except Exception:
+            pass
 
     def insert_output(self, text):
         self.output.config(state=tk.NORMAL)
@@ -235,34 +237,40 @@ class ChatWindow:
         self.output.see(tk.END)
         self.output.config(state=tk.DISABLED)
 
-    def send_prompt(self):
+    def send_prompt(self, event=None):
         query = self.prompt.get().strip()
         if not query:
             return
 
-        self.insert_output(f"\n🧑 You: {query}\n")
         self.prompt.delete(0, tk.END)
-        self.pty.write(query + "\r\n")
+        self.insert_output(f"\n🧑 You: {query}\n")
+
+        if not self.codex_ready:
+            self.pending_queue.append(query)
+        else:
+            self.safe_write(query + "\r\n")
 
     def read_output(self):
-        try:
-            while True:
+        while True:
+            try:
                 data = self.pty.read(4096)
                 if not data:
-                    time.sleep(0.05)
                     continue
 
-                if isinstance(data, bytes):
-                    text = data.decode("utf-8", errors="ignore")
-                else:
-                    text = data
+                text = data if isinstance(data, str) else data.decode(errors="ignore")
+
+                if "Compose is empty" in text or ">" in text:
+                    self.codex_ready = True
+                    while self.pending_queue:
+                        self.safe_write(self.pending_queue.pop(0) + "\r\n")
 
                 cleaned = clean_terminal_output(text)
                 if cleaned.strip():
                     self.insert_output(cleaned)
 
-        except Exception as e:
-            self.insert_output(f"\n❌ Error: {e}\n")
+            except Exception as e:
+                self.insert_output(f"\n❌ Error: {e}\n")
+                break
 
 # ---------------- ENTRY ----------------
 if __name__ == "__main__":
