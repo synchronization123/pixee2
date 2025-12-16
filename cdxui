@@ -58,14 +58,12 @@ def resolve_codex_cmd():
         os.path.join(NODE_DIR, "bin", "codex.cmd"),
         os.path.join(NODE_DIR, "node_modules", ".bin", "codex.cmd"),
     ]
-
     for c in candidates:
         if os.path.exists(c):
             return c
+    raise FileNotFoundError("codex.cmd not found")
 
-    raise FileNotFoundError("codex.cmd not found after installation")
-
-# ---------------- GUI ----------------
+# ---------------- SETUP GUI ----------------
 class SetupGUI:
     def __init__(self, root):
         self.root = root
@@ -75,7 +73,7 @@ class SetupGUI:
         self.log_box = scrolledtext.ScrolledText(root, wrap=tk.WORD)
         self.log_box.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        self.progress = ttk.Progressbar(root нави="indeterminate")
+        self.progress = ttk.Progressbar(root, mode="indeterminate")
         self.progress.pack(fill=tk.X, padx=10)
 
         self.status = tk.Label(root, text="Initializing...")
@@ -152,8 +150,8 @@ class SetupGUI:
     # ---------- CODEX ----------
     def ensure_codex(self):
         self.set_status("Installing Codex...")
-
         npm = os.path.join(NODE_DIR, "npm.cmd")
+
         env = os.environ.copy()
         env["PATH"] = NODE_DIR + ";" + env["PATH"]
 
@@ -237,11 +235,9 @@ class ChatWindow:
                 stderr=subprocess.STDOUT,
                 text=True
             )
-
             for line in proc.stdout:
                 self.output.insert(tk.END, line)
                 self.output.see(tk.END)
-
         except Exception as e:
             self.output.insert(tk.END, f"\n❌ Error: {e}\n")
 
