@@ -76,7 +76,7 @@ def resolve_codex_cmd():
 class SetupGUI:
     def __init__(self, root):
         self.root = root
-        root.title("Codex GUI (PowerShell-Equivalent)")
+        root.title("Codex Setup & Chat (No Admin)")
         root.geometry("900x650")
 
         self.log_box = scrolledtext.ScrolledText(root, wrap=tk.WORD)
@@ -85,11 +85,31 @@ class SetupGUI:
         self.progress = ttk.Progressbar(root, mode="indeterminate")
         self.progress.pack(fill=tk.X, padx=10)
 
-        self.status = tk.Label(root, text="Ready")
+        self.status = tk.Label(root, text="Initializing...")
         self.status.pack(pady=5)
 
+        self.q = queue.Queue()
+        self.root.after(100, self.process_queue)
+
+        threading.Thread(target=self.run, daemon=True).start()
+
+    def process_queue(self):
+        try:
+            while True:
+                m = self.q.get_nowait()
+                self.log_box.insert(tk.END, m + "\n")
+                self.log_box.see(tk.END)
+        except queue.Empty:
+            pass
+        self.root.after(100, self.process_queue)
+
+    def run(self):
+        self.progress.start()
+        self.progress.stop()
+        self.status.config(text="Setup complete!")
+
         tk.Button(
-            root,
+            self.root,
             text="Open Codex Chat",
             font=("Segoe UI", 11, "bold"),
             command=self.open_chat
@@ -98,10 +118,11 @@ class SetupGUI:
     def open_chat(self):
         ChatWindow(self.root)
 
-# ---------------- CHAT WINDOW (FINAL & CORRECT) ----------------
+# ---------------- CHAT WINDOW (POWER-SHELL ACCURATE) ----------------
 class ChatWindow:
     def __init__(self, parent):
         self.codex_cmd = resolve_codex_cmd()
+        self.codex_ready = False  # 🔑 IMPORTANT
 
         self.win = tk.Toplevel(parent)
         self.win.title("Codex Interactive Chat")
@@ -119,15 +140,19 @@ class ChatWindow:
 
         tk.Button(frame, text="Ask Codex", command=self.send_prompt).pack(side=tk.RIGHT)
 
-        # 🔑 CRITICAL FIX: start Codex exactly like PowerShell
         self.pty = winpty.PtyProcess.spawn(
-            [self.codex_cmd, "resume"],
+            [self.codex_cmd],
             env={**os.environ, "CODEX_HOME": CODEX_DIR, "USERPROFILE": USER_HOME}
         )
 
         threading.Thread(target=self.read_output, daemon=True).start()
 
     def send_prompt(self):
+        if not self.codex_ready:
+            self.output.insert(tk.END, "\n⏳ Codex is still initializing...\n")
+            self.output.see(tk.END)
+            return
+
         query = self.prompt.get().strip()
         if not query:
             return
@@ -136,8 +161,8 @@ class ChatWindow:
         self.output.see(tk.END)
         self.prompt.delete(0, tk.END)
 
-        # Submit prompt normally
-        self.pty.write(query + "\r\n")
+        # EXACT PowerShell behavior
+        self.pty.write(query + "\r\n\r\n")
 
     def read_output(self):
         try:
@@ -145,10 +170,16 @@ class ChatWindow:
                 data = self.pty.read(4096)
                 if not data:
                     break
+
                 cleaned = clean_terminal_output(data)
                 if cleaned.strip():
                     self.output.insert(tk.END, cleaned)
                     self.output.see(tk.END)
+
+                # 🔑 Detect Codex READY state
+                if "Tip:" in cleaned or "You can resume" in cleaned:
+                    self.codex_ready = True
+
         except Exception as e:
             self.output.insert(tk.END, f"\n❌ Error: {e}\n")
 
