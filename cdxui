@@ -12,7 +12,7 @@ import datetime
 import json
 
 # =========================================================
-# USER HOME RESOLUTION (UNCHANGED)
+# USER HOME RESOLUTION
 # =========================================================
 def resolve_user_home():
     username = os.getenv("USERNAME")
@@ -61,9 +61,6 @@ for d in [CODEX_DIR, CHAT_DIR, TEMPLATE_DIR]:
 
 CREATE_NO_WINDOW = 0x08000000
 
-# =========================================================
-# DOWNLOAD URLS
-# =========================================================
 PYTHON_ZIP_URL = "https://www.python.org/ftp/python/3.12.2/python-3.12.2-embed-amd64.zip"
 GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
 NODE_ZIP_URL = "https://nodejs.org/dist/v24.12.0/node-v24.12.0-win-x64.zip"
@@ -95,7 +92,7 @@ def load_templates():
     return templates
 
 # =========================================================
-# SETUP GUI (YOUR ORIGINAL, SLIGHTLY WRAPPED)
+# SETUP GUI (FIXED)
 # =========================================================
 class SetupGUI:
     def __init__(self, root):
@@ -113,22 +110,29 @@ class SetupGUI:
         self.status.pack(pady=5)
 
         self.q = queue.Queue()
-        self.root.after(100, self.process_queue)
+        self.after_id = None
+        self.running = True
 
+        self.schedule_queue()
         threading.Thread(target=self.run, daemon=True).start()
 
-    def log(self, msg):
-        self.q.put(msg)
+    def schedule_queue(self):
+        if self.running:
+            self.process_queue()
+            self.after_id = self.root.after(100, self.schedule_queue)
 
     def process_queue(self):
         try:
             while True:
                 self.log_box.insert(tk.END, self.q.get_nowait() + "\n")
+                self.log_box.see(tk.END)
         except queue.Empty:
             pass
-        self.root.after(100, self.process_queue)
 
-    # ---------------- SETUP STEPS ----------------
+    def log(self, msg):
+        self.q.put(msg)
+
+    # ---------- SETUP ----------
     def ensure_python(self):
         if os.path.exists(PYTHON_EXE):
             self.log("✔ Python already present")
@@ -176,10 +180,15 @@ class SetupGUI:
         self.ensure_config()
         self.progress.stop()
         self.log("Setup complete!")
-        self.root.after(800, self.launch_chat)
+        self.root.after(500, self.launch_chat)
 
     def launch_chat(self):
+        # 🔒 STOP CALLBACKS SAFELY
+        self.running = False
+        if self.after_id:
+            self.root.after_cancel(self.after_id)
         self.root.destroy()
+
         root = tk.Tk()
         CodexChat(root)
         root.mainloop()
@@ -211,7 +220,6 @@ class CodexChat:
         self.tabs = ttk.Notebook(root)
         self.tabs.pack(fill=tk.BOTH, expand=True)
 
-        self.sessions = {}
         self.add_tab()
 
     def add_tab(self):
@@ -221,8 +229,7 @@ class CodexChat:
         inp = tk.Text(f, height=4)
         inp.pack(fill=tk.X)
         tk.Button(f, text="Send", command=lambda: self.send(console, inp)).pack()
-        self.sessions[f] = []
-        self.tabs.add(f, text=f"Chat {len(self.sessions)}")
+        self.tabs.add(f, text="Chat")
 
     def send(self, console, inp):
         text = inp.get("1.0", tk.END).strip()
