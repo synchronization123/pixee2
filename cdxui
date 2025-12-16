@@ -14,15 +14,8 @@ import winpty  # REQUIRED for real terminal (ConPTY)
 # ---------------- ANSI CLEANING ----------------
 ANSI_ESCAPE_RE = re.compile(
     r"""
-    \x1B  # ESC
-    (?:   # 7-bit C1 Fe (except CSI)
-        [@-Z\\-_]
-    |     # or [ for CSI, followed by control sequences
-        \[
-        [0-?]*  # Parameter bytes
-        [ -/]*  # Intermediate bytes
-        [@-~]   # Final byte
-    )
+    \x1B
+    (?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])
     """,
     re.VERBOSE,
 )
@@ -30,9 +23,9 @@ ANSI_ESCAPE_RE = re.compile(
 def clean_terminal_output(text: str) -> str:
     if not text:
         return ""
-    text = ANSI_ESCAPE_RE.sub("", text)     # remove ANSI
-    text = text.replace("\r\n", "\n")       # normalize CRLF
-    text = text.replace("\r", "\n")         # normalize CR
+    text = ANSI_ESCAPE_RE.sub("", text)
+    text = text.replace("\r\n", "\n")
+    text = text.replace("\r", "\n")
     return text
 
 # ---------------- USER HOME RESOLUTION ----------------
@@ -92,7 +85,7 @@ def resolve_codex_cmd():
     for c in candidates:
         if os.path.exists(c):
             return c
-    raise FileNotFoundError("codex.cmd not found in expected Node paths")
+    raise FileNotFoundError("codex.cmd not found")
 
 # ---------------- SETUP GUI ----------------
 class SetupGUI:
@@ -209,10 +202,6 @@ class SetupGUI:
         self.progress.stop()
         self.set_status("Setup complete!")
 
-        self.log("\nℹ Codex directory fixed to:")
-        self.log(CODEX_DIR)
-        self.log("ℹ Populate config.toml from https://hub.ai.com if empty\n")
-
         tk.Button(
             self.root,
             text="Open Codex Chat",
@@ -223,7 +212,7 @@ class SetupGUI:
     def open_chat(self):
         ChatWindow(self.root)
 
-# ---------------- CHAT WINDOW (CLEAN OUTPUT) ----------------
+# ---------------- CHAT WINDOW (FIXED SUBMIT) ----------------
 class ChatWindow:
     def __init__(self, parent):
         self.codex_cmd = resolve_codex_cmd()
@@ -263,7 +252,9 @@ class ChatWindow:
         self.output.insert(tk.END, f"\n🧑 You: {query}\n")
         self.output.see(tk.END)
         self.prompt.delete(0, tk.END)
-        self.pty.write(query + "\r\n")
+
+        # SEND QUERY + ENTER + EOF (Ctrl+D)
+        self.pty.write(query + "\r\n\x04")
 
     def read_output(self):
         try:
@@ -271,12 +262,10 @@ class ChatWindow:
                 raw = self.pty.read(4096)
                 if not raw:
                     break
-
                 cleaned = clean_terminal_output(raw)
                 if cleaned.strip():
                     self.output.insert(tk.END, cleaned)
                     self.output.see(tk.END)
-
         except Exception as e:
             self.output.insert(tk.END, f"\n❌ Error: {e}\n")
 
