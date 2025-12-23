@@ -1,48 +1,53 @@
-import base64
-import zlib
-import marshal
 import os
 import sys
 import random
 import string
+import marshal
+import zlib
+import base64
 
-def random_name(length=12):
-    return ''.join(random.choice(string.ascii_letters) for _ in range(length))
+def _r(n=12):
+    return ''.join(random.choice(string.ascii_letters) for _ in range(n))
 
-def obfuscate_file(input_file):
-    if not os.path.exists(input_file):
+def _enc(s):
+    return [ord(c) for c in s]
+
+def obfuscate(inp):
+    if not os.path.isfile(inp):
         print("❌ File not found")
         return
 
-    with open(input_file, "r", encoding="utf-8") as f:
-        source = f.read()
+    with open(inp, "r", encoding="utf-8") as f:
+        src = f.read()
 
-    compiled = compile(source, "<obfuscated>", "exec")
-    marshaled = marshal.dumps(compiled)
-    compressed = zlib.compress(marshaled)
-    encoded = base64.b64encode(compressed)
+    compiled = compile(src, "<x>", "exec")
+    payload = base64.b85encode(zlib.compress(marshal.dumps(compiled)))
 
-    var1 = random_name()
-    var2 = random_name()
-    var3 = random_name()
+    # Jumbled module names (numbers only)
+    m1 = _enc("marshal")
+    m2 = _enc("zlib")
+    m3 = _enc("base64")
+    m4 = _enc("__import__")
 
-    stub = f'''
-import base64 as {var1}
-import zlib as {var2}
-import marshal as {var3}
+    a = _r(); b = _r(); c = _r(); d = _r(); e = _r()
 
-exec({var3}.loads({var2}.decompress({var1}.b64decode({encoded}))))
-'''
+    loader = f"""
+{a}=lambda x:''.join(chr(i) for i in x)
+{b}=getattr(__builtins__,{a}({m4}))
+{c}={b}({a}({m1}))
+{d}={b}({a}({m2}))
+{e}={b}({a}({m3}))
+exec({c}.loads({d}.decompress({e}.b85decode({payload!r}))))
+"""
 
-    output_file = input_file.replace(".pyw", "_obf.pyw").replace(".py", "_obf.py")
+    out = inp.replace(".pyw", "_obf.pyw").replace(".py", "_obf.py")
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(loader)
 
-    with open(output_file, "w", encoding="utf-8") as f:
-        f.write(stub)
-
-    print(f"✅ Obfuscated file created: {output_file}")
+    print("✅ Obfuscated file created:", out)
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Usage: python obfuscate.py your_file.pyw")
+        print("Usage: python obfuscate.py yourfile.pyw")
     else:
-        obfuscate_file(sys.argv[1])
+        obfuscate(sys.argv[1])
