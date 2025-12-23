@@ -1,0 +1,48 @@
+import base64
+import zlib
+import marshal
+import os
+import sys
+import random
+import string
+
+def random_name(length=12):
+    return ''.join(random.choice(string.ascii_letters) for _ in range(length))
+
+def obfuscate_file(input_file):
+    if not os.path.exists(input_file):
+        print("❌ File not found")
+        return
+
+    with open(input_file, "r", encoding="utf-8") as f:
+        source = f.read()
+
+    compiled = compile(source, "<obfuscated>", "exec")
+    marshaled = marshal.dumps(compiled)
+    compressed = zlib.compress(marshaled)
+    encoded = base64.b64encode(compressed)
+
+    var1 = random_name()
+    var2 = random_name()
+    var3 = random_name()
+
+    stub = f'''
+import base64 as {var1}
+import zlib as {var2}
+import marshal as {var3}
+
+exec({var3}.loads({var2}.decompress({var1}.b64decode({encoded}))))
+'''
+
+    output_file = input_file.replace(".pyw", "_obf.pyw").replace(".py", "_obf.py")
+
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write(stub)
+
+    print(f"✅ Obfuscated file created: {output_file}")
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print("Usage: python obfuscate.py your_file.pyw")
+    else:
+        obfuscate_file(sys.argv[1])
